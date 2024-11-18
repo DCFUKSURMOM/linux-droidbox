@@ -12,7 +12,7 @@ For a normal xbox kernel config without any Android settings use xbox_defconfig
 
 For a kernel config with Android settings enabled, use droidbox_defconfig, its based on the xbox_defconfig and just has the extra settings enabled, it also enables the (custom) logo at boot
 
-The stock normal androidx86 defconfigs are also available but these are standard pc configs and will not work on the Xbox.
+The normal androidx86 defconfigs are also available but these are standard pc configs and will not work on the Xbox.
 
 There is nothing stopping you from building this kernel for any hardware supported by stock Linux 5.8 (that I'm aware of at least)
 
