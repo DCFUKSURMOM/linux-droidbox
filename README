@@ -1,3 +1,6 @@
+In order to avoid having to maintain 2 Xbox kernels, I have moved all development to here. My orignal fork has been archived
+This kernel works just fine as a "normal" kernel so there is no reason to have a completely separate one.
+
 This is an experimental Android x86 Linux kernel for the orignal Xbox
 
 The kernel version is 5.9
