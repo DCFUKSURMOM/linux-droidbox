@@ -9,10 +9,10 @@
 #include <linux/cdrom.h>
 #include <asm/byteorder.h>
 
-/*#ifdef CONFIG_X86_XBOX
+#ifdef CONFIG_X86_XBOX
 #include <linux/xbox.h>
 extern volatile int Xbox_simulate_drive_locked;
-#endif */
+#endif
 
 #define IDECD_DEBUG_LOG		0
 

@@ -61,7 +61,7 @@ struct userfaultfd_ctx {
 	/* waitqueue head for events */
 	wait_queue_head_t event_wqh;
 	/* a refile sequence protected by fault_pending_wqh lock */
-	struct seqcount refile_seq;
+	seqcount_spinlock_t refile_seq;
 	/* pseudo fd refcounting */
 	refcount_t refcount;
 	/* userfaultfd syscall flags */
@@ -339,7 +339,6 @@ out:
 	return ret;
 }
 
-/* Should pair with userfaultfd_signal_pending() */
 static inline long userfaultfd_get_blocking_state(unsigned int flags)
 {
 	if (flags & FAULT_FLAG_INTERRUPTIBLE)
@@ -349,18 +348,6 @@ static inline long userfaultfd_get_blocking_state(unsigned int flags)
 		return TASK_KILLABLE;
 
 	return TASK_UNINTERRUPTIBLE;
-}
-
-/* Should pair with userfaultfd_get_blocking_state() */
-static inline bool userfaultfd_signal_pending(unsigned int flags)
-{
-	if (flags & FAULT_FLAG_INTERRUPTIBLE)
-		return signal_pending(current);
-
-	if (flags & FAULT_FLAG_KILLABLE)
-		return fatal_signal_pending(current);
-
-	return false;
 }
 
 /*
@@ -516,33 +503,9 @@ vm_fault_t handle_userfault(struct vm_fault *vmf, unsigned long reason)
 						       vmf->flags, reason);
 	mmap_read_unlock(mm);
 
-	if (likely(must_wait && !READ_ONCE(ctx->released) &&
-		   !userfaultfd_signal_pending(vmf->flags))) {
+	if (likely(must_wait && !READ_ONCE(ctx->released))) {
 		wake_up_poll(&ctx->fd_wqh, EPOLLIN);
 		schedule();
-		ret |= VM_FAULT_MAJOR;
-
-		/*
-		 * False wakeups can orginate even from rwsem before
-		 * up_read() however userfaults will wait either for a
-		 * targeted wakeup on the specific uwq waitqueue from
-		 * wake_userfault() or for signals or for uffd
-		 * release.
-		 */
-		while (!READ_ONCE(uwq.waken)) {
-			/*
-			 * This needs the full smp_store_mb()
-			 * guarantee as the state write must be
-			 * visible to other CPUs before reading
-			 * uwq.waken from other CPUs.
-			 */
-			set_current_state(blocking_state);
-			if (READ_ONCE(uwq.waken) ||
-			    READ_ONCE(ctx->released) ||
-			    userfaultfd_signal_pending(vmf->flags))
-				break;
-			schedule();
-		}
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -911,8 +874,7 @@ static int userfaultfd_release(struct inode *inode, struct file *file)
 					 new_flags, vma->anon_vma,
 					 vma->vm_file, vma->vm_pgoff,
 					 vma_policy(vma),
-					 NULL_VM_UFFD_CTX,
-					 vma_get_anon_name(vma));
+					 NULL_VM_UFFD_CTX, vma_anon_name(vma));
 			if (prev)
 				vma = prev;
 			else
@@ -1464,7 +1426,7 @@ static int userfaultfd_register(struct userfaultfd_ctx *ctx,
 				 vma->anon_vma, vma->vm_file, vma->vm_pgoff,
 				 vma_policy(vma),
 				 ((struct vm_userfaultfd_ctx){ ctx }),
-				 vma_get_anon_name(vma));
+				 vma_anon_name(vma));
 		if (prev) {
 			vma = prev;
 			goto next;
@@ -1636,8 +1598,7 @@ static int userfaultfd_unregister(struct userfaultfd_ctx *ctx,
 		prev = vma_merge(mm, prev, start, vma_end, new_flags,
 				 vma->anon_vma, vma->vm_file, vma->vm_pgoff,
 				 vma_policy(vma),
-				 NULL_VM_UFFD_CTX,
-				 vma_get_anon_name(vma));
+				 NULL_VM_UFFD_CTX, vma_anon_name(vma));
 		if (prev) {
 			vma = prev;
 			goto next;
@@ -2001,7 +1962,7 @@ static void init_once_userfaultfd_ctx(void *mem)
 	init_waitqueue_head(&ctx->fault_wqh);
 	init_waitqueue_head(&ctx->event_wqh);
 	init_waitqueue_head(&ctx->fd_wqh);
-	seqcount_init(&ctx->refile_seq);
+	seqcount_spinlock_init(&ctx->refile_seq, &ctx->fault_pending_wqh.lock);
 }
 
 SYSCALL_DEFINE1(userfaultfd, int, flags)

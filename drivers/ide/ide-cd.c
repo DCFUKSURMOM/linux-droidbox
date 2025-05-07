@@ -350,7 +350,7 @@ static int cdrom_decode_status(ide_drive_t *drive, u8 stat)
 		 */
 		if (scsi_req(rq)->cmd[0] == GPCMD_START_STOP_UNIT)
 			break;
-		/* fall-through */
+		fallthrough;
 	case DATA_PROTECT:
 		/*
 		 * No point in retrying after an illegal request or data
@@ -750,7 +750,7 @@ static ide_startstop_t cdrom_newpc_intr(ide_drive_t *drive)
 	case REQ_OP_DRV_IN:
 	case REQ_OP_DRV_OUT:
 		expiry = ide_cd_expiry;
-		/*FALLTHRU*/
+		fallthrough;
 	default:
 		timeout = ATAPI_WAIT_PC;
 		break;
@@ -1564,14 +1564,14 @@ static int ide_cdrom_setup(ide_drive_t *drive)
 		/* 3 => use CD in slot 0 */
 		cdi->sanyo_slot = 3;
 
-/* #ifdef CONFIG_X86_XBOX
+#ifdef CONFIG_X86_XBOX
 	/* Is an Xbox drive detected? */
-/*	if (drive->atapi_flags & IDE_AFLAG_XBOX_DRIVE) {
+	if (drive->atapi_flags & IDE_AFLAG_XBOX_DRIVE) {
 		/* If an Xbox drive is present in a regular PC, we can't eject.
 		   Act like the drive cannot eject, unless the ATAPI eject command
 		   is supported by the drive.  If the drive doesn't support ATAPI
 		   ejecting, act like door locking is impossible as well. */
-/*		if (!machine_is_xbox()) {
+		if (!machine_is_xbox()) {
 			if (drive->atapi_flags & IDE_AFLAG_XBOX_EJECT) {
 				drive->dev_flags &= ~IDE_DFLAG_DOORLOCKING;	// Xbox Drive in PC:  Disable Door Locking
 				drive->atapi_flags |= IDE_AFLAG_NO_EJECT;	// Xbox Drive in PC:  Disable Eject
@@ -1580,12 +1580,12 @@ static int ide_cdrom_setup(ide_drive_t *drive)
 			/* An Xbox drive in an Xbox.  We can support ejecting through
 			   the SMC and support drive locking in software by ignoring
 			   the eject interrupt. */
-/*			drive->dev_flags |= IDE_DFLAG_DOORLOCKING;	// Xbox Drive in Xbox:  Allow Door Locking
+			drive->dev_flags |= IDE_DFLAG_DOORLOCKING;	// Xbox Drive in Xbox:  Allow Door Locking
 			drive->atapi_flags &= ~IDE_AFLAG_NO_EJECT;	// Xbox Drive in Xbox:  Allow Eject
 			Xbox_simulate_drive_locked = 0;
 		}
 	}
-#endif */
+#endif
 	nslots = ide_cdrom_probe_capabilities(drive);
 
 	blk_queue_logical_block_size(q, CD_FRAMESIZE);

@@ -1,19 +1,23 @@
 This is an experimental Android x86 Linux kernel for the orignal Xbox
 
-The kernel version is 5.8
+The kernel version is 5.9
 
-It is a hybrid of these 2 kernels:
+It was originally a hybrid of these 2 kernels:
 
 https://github.com/XboxDev/xbox-linux (Linux 5.8.1)
 
 https://github.com/maurossi/linux/tree/kernel-5.8_si_next (Linux 5.8)
 
+But it has since been updated.
+
 For a normal xbox kernel config without any Android settings use xbox_defconfig
 
-For a kernel config with Android settings enabled, use droidbox_defconfig, its based on the xbox_defconfig and just has the extra settings enabled, it also enables the (custom) logo at boot
+For a "normal" kernel config without any Android stuff, use xbox_defconfig
+
+For a kernel config with Android settings enabled, use droidbox_defconfig, its based on the xbox_defconfig and just has the extra settings enabled, it also enables the droidbox logo at boot
 
 The normal androidx86 defconfigs are also available but these are standard pc configs and will not work on the Xbox.
 
 There is nothing stopping you from building this kernel for any hardware supported by stock Linux 5.8 (that I'm aware of at least)
 
-The current logo is just a placeholder, something I quickly made in GIMP to add a personal touch, it may be replaced in the future.
+The current droidbox logo is just a placeholder, something I quickly made in GIMP to add a personal touch, it may be replaced in the future.

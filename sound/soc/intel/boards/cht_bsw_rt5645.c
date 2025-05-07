@@ -207,7 +207,7 @@ static struct snd_soc_jack_pin cht_bsw_jack_pins[] = {
 static int cht_aif1_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int ret;
 
@@ -479,7 +479,7 @@ static struct snd_soc_dai_link cht_dailink[] = {
 	},
 };
 
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_BROADWELL)
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_BAYTRAIL)
 /* use space before codec name to simplify card ID, and simplify driver name */
 #define CARD_RT5645_NAME "bytcht rt5645" /* card name 'sof-bytcht rt5645' */
 #define CARD_RT5650_NAME "bytcht rt5650" /* card name 'sof-bytcht rt5650' */

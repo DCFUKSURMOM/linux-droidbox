@@ -347,7 +347,7 @@ static struct snd_soc_jack_pin bytcr_jack_pins[] = {
 static int byt_rt5651_aif1_hw_params(struct snd_pcm_substream *substream,
 					struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	snd_pcm_format_t format = params_format(params);
 	int rate = params_rate(params);
@@ -977,8 +977,8 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 	dmi_check_system(byt_rt5651_quirk_table);
 
 	if (quirk_override != -1) {
-		dev_info(&pdev->dev, "Overriding quirk 0x%x => 0x%x\n",
-			 (unsigned int)byt_rt5651_quirk, quirk_override);
+		dev_info(&pdev->dev, "Overriding quirk 0x%lx => 0x%x\n",
+			 byt_rt5651_quirk, quirk_override);
 		byt_rt5651_quirk = quirk_override;
 	}
 
@@ -1009,7 +1009,7 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 			default:
 				dev_err(&pdev->dev, "Failed to get ext-amp-enable GPIO: %d\n",
 					ret_val);
-				/* fall through */
+				fallthrough;
 			case -EPROBE_DEFER:
 				put_device(codec_dev);
 				return ret_val;
@@ -1029,7 +1029,7 @@ static int snd_byt_rt5651_mc_probe(struct platform_device *pdev)
 			default:
 				dev_err(&pdev->dev, "Failed to get hp-detect GPIO: %d\n",
 					ret_val);
-				/* fall through */
+				fallthrough;
 			case -EPROBE_DEFER:
 				put_device(codec_dev);
 				return ret_val;
