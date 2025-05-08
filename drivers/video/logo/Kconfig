@@ -33,6 +33,10 @@ config LOGO_DEC_CLUT224
 	depends on MACH_DECSTATION || ALPHA
 	default y
 
+config LOGO_DROIDBOX_CLUT224
+	bool "Droidbox Logo"
+	default n
+
 config LOGO_MAC_CLUT224
 	bool "224-color Macintosh Linux logo"
 	depends on MAC
@@ -67,5 +71,9 @@ config LOGO_SUPERH_CLUT224
 	bool "224-color SuperH Linux logo"
 	depends on SUPERH
 	default y
+
+config LOGO_XBOX_CLUT224
+	bool "Xbox Logo"
+	default n
 
 endif # LOGO

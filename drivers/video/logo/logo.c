@@ -79,6 +79,10 @@ const struct linux_logo * __ref fb_find_logo(int depth)
 		/* DEC Linux logo on MIPS/MIPS64 or ALPHA */
 		logo = &logo_dec_clut224;
 #endif
+#ifdef CONFIG_LOGO_DROIDBOX_CLUT224
+		/* DroidBox Logo */
+		logo = &logo_droidbox_clut224;
+#endif
 #ifdef CONFIG_LOGO_MAC_CLUT224
 		/* Macintosh Linux logo on m68k */
 		if (MACH_IS_MAC)
@@ -99,6 +103,10 @@ const struct linux_logo * __ref fb_find_logo(int depth)
 #ifdef CONFIG_LOGO_SUPERH_CLUT224
 		/* SuperH Linux logo */
 		logo = &logo_superh_clut224;
+#endif
+#ifdef CONFIG_LOGO_XBOX_CLUT224
+		/* Xbox Logo */
+		logo = &logo_xbox_clut224;
 #endif
 	}
 	return logo;
