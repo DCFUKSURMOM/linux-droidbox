@@ -53,12 +53,6 @@ struct tp_probes {
 	struct tracepoint_func probes[];
 };
 
-/* Called in removal of a func but failed to allocate a new tp_funcs */
-static void tp_stub_func(void)
-{
-	return;
-}
-
 static inline void *allocate_probes(int count)
 {
 	struct tp_probes *p  = kmalloc(struct_size(p, probes, count),
@@ -137,7 +131,6 @@ func_add(struct tracepoint_func **funcs, struct tracepoint_func *tp_func,
 {
 	struct tracepoint_func *old, *new;
 	int nr_probes = 0;
-	int stub_funcs = 0;
 	int pos = -1;
 
 	if (WARN_ON(!tp_func->func))
@@ -154,34 +147,14 @@ func_add(struct tracepoint_func **funcs, struct tracepoint_func *tp_func,
 			if (old[nr_probes].func == tp_func->func &&
 			    old[nr_probes].data == tp_func->data)
 				return ERR_PTR(-EEXIST);
-			if (old[nr_probes].func == tp_stub_func)
-				stub_funcs++;
 		}
 	}
-	/* + 2 : one for new probe, one for NULL func - stub functions */
-	new = allocate_probes(nr_probes + 2 - stub_funcs);
+	/* + 2 : one for new probe, one for NULL func */
+	new = allocate_probes(nr_probes + 2);
 	if (new == NULL)
 		return ERR_PTR(-ENOMEM);
 	if (old) {
-		if (stub_funcs) {
-			/* Need to copy one at a time to remove stubs */
-			int probes = 0;
-
-			pos = -1;
-			for (nr_probes = 0; old[nr_probes].func; nr_probes++) {
-				if (old[nr_probes].func == tp_stub_func)
-					continue;
-				if (pos < 0 && old[nr_probes].prio < prio)
-					pos = probes++;
-				new[probes++] = old[nr_probes];
-			}
-			nr_probes = probes;
-			if (pos < 0)
-				pos = probes;
-			else
-				nr_probes--; /* Account for insertion */
-
-		} else if (pos < 0) {
+		if (pos < 0) {
 			pos = nr_probes;
 			memcpy(new, old, nr_probes * sizeof(struct tracepoint_func));
 		} else {
@@ -215,9 +188,8 @@ static void *func_remove(struct tracepoint_func **funcs,
 	/* (N -> M), (N > 1, M >= 0) probes */
 	if (tp_func->func) {
 		for (nr_probes = 0; old[nr_probes].func; nr_probes++) {
-			if ((old[nr_probes].func == tp_func->func &&
-			     old[nr_probes].data == tp_func->data) ||
-			    old[nr_probes].func == tp_stub_func)
+			if (old[nr_probes].func == tp_func->func &&
+			     old[nr_probes].data == tp_func->data)
 				nr_del++;
 		}
 	}
@@ -236,32 +208,14 @@ static void *func_remove(struct tracepoint_func **funcs,
 		/* N -> M, (N > 1, M > 0) */
 		/* + 1 for NULL */
 		new = allocate_probes(nr_probes - nr_del + 1);
-		if (new) {
-			for (i = 0; old[i].func; i++)
-				if ((old[i].func != tp_func->func
-				     || old[i].data != tp_func->data)
-				    && old[i].func != tp_stub_func)
-					new[j++] = old[i];
-			new[nr_probes - nr_del].func = NULL;
-			*funcs = new;
-		} else {
-			/*
-			 * Failed to allocate, replace the old function
-			 * with calls to tp_stub_func.
-			 */
-			for (i = 0; old[i].func; i++)
-				if (old[i].func == tp_func->func &&
-				    old[i].data == tp_func->data) {
-					old[i].func = tp_stub_func;
-					/* Set the prio to the next event. */
-					if (old[i + 1].func)
-						old[i].prio =
-							old[i + 1].prio;
-					else
-						old[i].prio = -1;
-				}
-			*funcs = old;
-		}
+		if (new == NULL)
+			return ERR_PTR(-ENOMEM);
+		for (i = 0; old[i].func; i++)
+			if (old[i].func != tp_func->func
+					|| old[i].data != tp_func->data)
+				new[j++] = old[i];
+		new[nr_probes - nr_del].func = NULL;
+		*funcs = new;
 	}
 	debug_print_probes(*funcs);
 	return old;
@@ -341,12 +295,10 @@ static int tracepoint_remove_func(struct tracepoint *tp,
 	tp_funcs = rcu_dereference_protected(tp->funcs,
 			lockdep_is_held(&tracepoints_mutex));
 	old = func_remove(&tp_funcs, func);
-	if (WARN_ON_ONCE(IS_ERR(old)))
+	if (IS_ERR(old)) {
+		WARN_ON_ONCE(PTR_ERR(old) != -ENOMEM);
 		return PTR_ERR(old);
-
-	if (tp_funcs == old)
-		/* Failed allocating new tp_funcs, replaced func with stub */
-		return 0;
+	}
 
 	if (!tp_funcs) {
 		/* Removed last function */
@@ -642,7 +594,7 @@ int syscall_regfunc(void)
 	if (!sys_tracepoint_refcount) {
 		read_lock(&tasklist_lock);
 		for_each_process_thread(p, t) {
-			set_tsk_thread_flag(t, TIF_SYSCALL_TRACEPOINT);
+			set_task_syscall_work(t, SYSCALL_TRACEPOINT);
 		}
 		read_unlock(&tasklist_lock);
 	}
@@ -659,88 +611,9 @@ void syscall_unregfunc(void)
 	if (!sys_tracepoint_refcount) {
 		read_lock(&tasklist_lock);
 		for_each_process_thread(p, t) {
-			clear_tsk_thread_flag(t, TIF_SYSCALL_TRACEPOINT);
+			clear_task_syscall_work(t, SYSCALL_TRACEPOINT);
 		}
 		read_unlock(&tasklist_lock);
 	}
 }
-#endif
-
-#ifdef CONFIG_ANDROID_VENDOR_HOOKS
-
-static void *rvh_zalloc_funcs(int count)
-{
-	return kzalloc(sizeof(struct tracepoint_func) * count, GFP_KERNEL);
-}
-
-#define ANDROID_RVH_NR_PROBES_MAX	2
-static int rvh_func_add(struct tracepoint *tp, struct tracepoint_func *func)
-{
-	int i;
-
-	if (!static_key_enabled(&tp->key)) {
-		/* '+ 1' for the last NULL element */
-		tp->funcs = rvh_zalloc_funcs(ANDROID_RVH_NR_PROBES_MAX + 1);
-		if (!tp->funcs)
-			return ENOMEM;
-	}
-
-	for (i = 0; i < ANDROID_RVH_NR_PROBES_MAX; i++) {
-		if (!tp->funcs[i].func) {
-			if (!static_key_enabled(&tp->key))
-				tp->funcs[i].data = func->data;
-			WRITE_ONCE(tp->funcs[i].func, func->func);
-
-			return 0;
-		}
-	}
-
-	return -EBUSY;
-}
-
-static int android_rvh_add_func(struct tracepoint *tp, struct tracepoint_func *func)
-{
-	int ret;
-
-	if (tp->regfunc && !static_key_enabled(&tp->key)) {
-		ret = tp->regfunc();
-		if (ret < 0)
-			return ret;
-	}
-
-	ret = rvh_func_add(tp, func);
-	if (ret)
-		return ret;
-	tracepoint_update_call(tp, tp->funcs, false);
-	static_key_enable(&tp->key);
-
-	return 0;
-}
-
-int android_rvh_probe_register(struct tracepoint *tp, void *probe, void *data)
-{
-	struct tracepoint_func tp_func;
-	int ret;
-
-	/*
-	 * Once the static key has been flipped, the array may be read
-	 * concurrently. Although __traceiter_*()  always checks .func first,
-	 * it doesn't enforce read->read dependencies, and we can't strongly
-	 * guarantee it will see the correct .data for the second element
-	 * without adding smp_load_acquire() in the fast path. But this is a
-	 * corner case which is unlikely to be needed by anybody in practice,
-	 * so let's just forbid it and keep the fast path clean.
-	 */
-	if (WARN_ON(static_key_enabled(&tp->key) && data))
-		return -EINVAL;
-
-	mutex_lock(&tracepoints_mutex);
-	tp_func.func = probe;
-	tp_func.data = data;
-	ret = android_rvh_add_func(tp, &tp_func);
-	mutex_unlock(&tracepoints_mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(android_rvh_probe_register);
 #endif

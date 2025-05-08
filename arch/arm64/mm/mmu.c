@@ -40,7 +40,7 @@
 #define NO_BLOCK_MAPPINGS	BIT(0)
 #define NO_CONT_MAPPINGS	BIT(1)
 
-u64 idmap_t0sz = TCR_T0SZ(VA_BITS_MIN);
+u64 idmap_t0sz = TCR_T0SZ(VA_BITS);
 u64 idmap_ptrs_per_pgd = PTRS_PER_PGD;
 
 u64 __section(".mmuoff.data.write") vabits_actual;
@@ -464,20 +464,35 @@ void __init mark_linear_text_alias_ro(void)
 	/*
 	 * Remove the write permissions from the linear alias of .text/.rodata
 	 */
-	update_mapping_prot(__pa_symbol(_text), (unsigned long)lm_alias(_text),
-			    (unsigned long)__init_begin - (unsigned long)_text,
+	update_mapping_prot(__pa_symbol(_stext), (unsigned long)lm_alias(_stext),
+			    (unsigned long)__init_begin - (unsigned long)_stext,
 			    PAGE_KERNEL_RO);
 }
 
+static bool crash_mem_map __initdata;
+
+static int __init enable_crash_mem_map(char *arg)
+{
+	/*
+	 * Proper parameter parsing is done by reserve_crashkernel(). We only
+	 * need to know if the linear map has to avoid block mappings so that
+	 * the crashkernel reservations can be unmapped later.
+	 */
+	crash_mem_map = true;
+
+	return 0;
+}
+early_param("crashkernel", enable_crash_mem_map);
+
 static void __init map_mem(pgd_t *pgdp)
 {
-	phys_addr_t kernel_start = __pa_symbol(_text);
+	phys_addr_t kernel_start = __pa_symbol(_stext);
 	phys_addr_t kernel_end = __pa_symbol(__init_begin);
 	phys_addr_t start, end;
 	int flags = 0;
 	u64 i;
 
-	if (rodata_full || debug_pagealloc_enabled())
+	if (rodata_full || crash_mem_map || debug_pagealloc_enabled())
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	/*
@@ -487,11 +502,6 @@ static void __init map_mem(pgd_t *pgdp)
 	 * the following for-loop
 	 */
 	memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
-#ifdef CONFIG_KEXEC_CORE
-	if (crashk_res.end)
-		memblock_mark_nomap(crashk_res.start,
-				    resource_size(&crashk_res));
-#endif
 
 	/* map all the memory banks */
 	for_each_mem_range(i, &start, &end) {
@@ -502,12 +512,11 @@ static void __init map_mem(pgd_t *pgdp)
 		 * if MTE is present. Otherwise, it has the same attributes as
 		 * PAGE_KERNEL.
 		 */
-		__map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL),
-			       flags);
+		__map_memblock(pgdp, start, end, PAGE_KERNEL_TAGGED, flags);
 	}
 
 	/*
-	 * Map the linear alias of the [_text, __init_begin) interval
+	 * Map the linear alias of the [_stext, __init_begin) interval
 	 * as non-executable now, and remove the write permission in
 	 * mark_linear_text_alias_ro() below (which will be called after
 	 * alternative patching has completed). This makes the contents
@@ -519,21 +528,6 @@ static void __init map_mem(pgd_t *pgdp)
 	__map_memblock(pgdp, kernel_start, kernel_end,
 		       PAGE_KERNEL, NO_CONT_MAPPINGS);
 	memblock_clear_nomap(kernel_start, kernel_end - kernel_start);
-
-#ifdef CONFIG_KEXEC_CORE
-	/*
-	 * Use page-level mappings here so that we can shrink the region
-	 * in page granularity and put back unused memory to buddy system
-	 * through /sys/kernel/kexec_crash_size interface.
-	 */
-	if (crashk_res.end) {
-		__map_memblock(pgdp, crashk_res.start, crashk_res.end + 1,
-			       PAGE_KERNEL,
-			       NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS);
-		memblock_clear_nomap(crashk_res.start,
-				     resource_size(&crashk_res));
-	}
-#endif
 }
 
 void mark_rodata_ro(void)
@@ -634,7 +628,7 @@ static bool arm64_early_this_cpu_has_bti(void)
 	if (!IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
 		return false;
 
-	pfr1 = __read_sysreg_by_encoding(SYS_ID_AA64PFR1_EL1);
+	pfr1 = read_sysreg_s(SYS_ID_AA64PFR1_EL1);
 	return cpuid_feature_extract_unsigned_field(pfr1,
 						    ID_AA64PFR1_BT_SHIFT);
 }
@@ -666,7 +660,7 @@ static void __init map_kernel(pgd_t *pgdp)
 	 * Only rodata will be remapped with different permissions later on,
 	 * all other segments are allowed to use contiguous mappings.
 	 */
-	map_kernel_segment(pgdp, _text, _etext, text_prot, &vmlinux_text, 0,
+	map_kernel_segment(pgdp, _stext, _etext, text_prot, &vmlinux_text, 0,
 			   VM_NO_GUARD);
 	map_kernel_segment(pgdp, __start_rodata, __inittext_begin, PAGE_KERNEL,
 			   &vmlinux_rodata, NO_CONT_MAPPINGS, VM_NO_GUARD);
@@ -1450,30 +1444,14 @@ static void __remove_pgd_mapping(pgd_t *pgdir, unsigned long start, u64 size)
 
 static bool inside_linear_region(u64 start, u64 size)
 {
-	u64 start_linear_pa = __pa(_PAGE_OFFSET(vabits_actual));
-	u64 end_linear_pa = __pa(PAGE_END - 1);
-
-	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE)) {
-		/*
-		 * Check for a wrap, it is possible because of randomized linear
-		 * mapping the start physical address is actually bigger than
-		 * the end physical address. In this case set start to zero
-		 * because [0, end_linear_pa] range must still be able to cover
-		 * all addressable physical addresses.
-		 */
-		if (start_linear_pa > end_linear_pa)
-			start_linear_pa = 0;
-	}
-
-	WARN_ON(start_linear_pa > end_linear_pa);
-
 	/*
 	 * Linear mapping region is the range [PAGE_OFFSET..(PAGE_END - 1)]
 	 * accommodating both its ends but excluding PAGE_END. Max physical
 	 * range which can be mapped inside this linear mapping range, must
 	 * also be derived from its end points.
 	 */
-	return start >= start_linear_pa && (start + size - 1) <= end_linear_pa;
+	return start >= __pa(_PAGE_OFFSET(vabits_actual)) &&
+	       (start + size - 1) <= __pa(PAGE_END - 1);
 }
 
 int arch_add_memory(int nid, u64 start, u64 size,
@@ -1486,12 +1464,7 @@ int arch_add_memory(int nid, u64 start, u64 size,
 		return -EINVAL;
 	}
 
-	/*
-	 * KFENCE requires linear map to be mapped at page granularity, so that
-	 * it is possible to protect/unprotect single pages in the KFENCE pool.
-	 */
-	if (rodata_full || debug_pagealloc_enabled() ||
-	    IS_ENABLED(CONFIG_KFENCE))
+	if (rodata_full || debug_pagealloc_enabled())
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	__create_pgd_mapping(swapper_pg_dir, start, __phys_to_virt(start),
@@ -1518,71 +1491,6 @@ void arch_remove_memory(int nid, u64 start, u64 size,
 	__remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size);
 }
 
-int check_range_driver_managed(u64 start, u64 size, const char *resource_name)
-{
-	struct mem_section *ms;
-	unsigned long pfn = __phys_to_pfn(start);
-	unsigned long end_pfn = __phys_to_pfn(start + size);
-	struct resource *res;
-	unsigned long flags;
-
-	res = lookup_resource(&iomem_resource, start);
-	if (!res) {
-		pr_err("%s: couldn't find memory resource for start 0x%llx\n",
-			   __func__, start);
-		return -EINVAL;
-	}
-
-	flags = res->flags;
-
-	if (!(flags & IORESOURCE_SYSRAM_DRIVER_MANAGED) ||
-	    strstr(resource_name, "System RAM (") != resource_name)
-		return -EINVAL;
-
-	for (; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
-		ms = __pfn_to_section(pfn);
-		if (early_section(ms))
-			return -EINVAL;
-	}
-
-	return 0;
-}
-
-int populate_range_driver_managed(u64 start, u64 size,
-			const char *resource_name)
-{
-	unsigned long virt = (unsigned long)phys_to_virt(start);
-	int flags = 0;
-
-	if (check_range_driver_managed(start, size, resource_name))
-		return -EINVAL;
-
-	/*
-	 * When rodata_full is enabled, memory is mapped at page size granule,
-	 * as opposed to block mapping.
-	 */
-	if (rodata_full || debug_pagealloc_enabled())
-		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
-
-	__create_pgd_mapping(init_mm.pgd, start, virt, size,
-			     PAGE_KERNEL, NULL, flags);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(populate_range_driver_managed);
-
-int depopulate_range_driver_managed(u64 start, u64 size,
-			const char *resource_name)
-{
-	if (check_range_driver_managed(start, size, resource_name))
-		return -EINVAL;
-
-	unmap_hotplug_range(start, start + size, false, NULL);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(depopulate_range_driver_managed);
-
 /*
  * This memory hotplug notifier helps prevent boot memory from being
  * inadvertently removed as it blocks pfn range offlining process in
@@ -1600,13 +1508,43 @@ static int prevent_bootmem_remove_notifier(struct notifier_block *nb,
 	unsigned long end_pfn = arg->start_pfn + arg->nr_pages;
 	unsigned long pfn = arg->start_pfn;
 
-	if (action != MEM_GOING_OFFLINE)
+	if ((action != MEM_GOING_OFFLINE) && (action != MEM_OFFLINE))
 		return NOTIFY_OK;
 
 	for (; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
+		unsigned long start = PFN_PHYS(pfn);
+		unsigned long end = start + (1UL << PA_SECTION_SHIFT);
+
 		ms = __pfn_to_section(pfn);
-		if (early_section(ms))
+		if (!early_section(ms))
+			continue;
+
+		if (action == MEM_GOING_OFFLINE) {
+			/*
+			 * Boot memory removal is not supported. Prevent
+			 * it via blocking any attempted offline request
+			 * for the boot memory and just report it.
+			 */
+			pr_warn("Boot memory [%lx %lx] offlining attempted\n", start, end);
 			return NOTIFY_BAD;
+		} else if (action == MEM_OFFLINE) {
+			/*
+			 * This should have never happened. Boot memory
+			 * offlining should have been prevented by this
+			 * very notifier. Probably some memory removal
+			 * procedure might have changed which would then
+			 * require further debug.
+			 */
+			pr_err("Boot memory [%lx %lx] offlined\n", start, end);
+
+			/*
+			 * Core memory hotplug does not process a return
+			 * code from the notifier for MEM_OFFLINE events.
+			 * The error condition has been reported. Return
+			 * from here as if ignored.
+			 */
+			return NOTIFY_DONE;
+		}
 	}
 	return NOTIFY_OK;
 }
@@ -1615,9 +1553,66 @@ static struct notifier_block prevent_bootmem_remove_nb = {
 	.notifier_call = prevent_bootmem_remove_notifier,
 };
 
+/*
+ * This ensures that boot memory sections on the platform are online
+ * from early boot. Memory sections could not be prevented from being
+ * offlined, unless for some reason they are not online to begin with.
+ * This helps validate the basic assumption on which the above memory
+ * event notifier works to prevent boot memory section offlining and
+ * its possible removal.
+ */
+static void validate_bootmem_online(void)
+{
+	phys_addr_t start, end, addr;
+	struct mem_section *ms;
+	u64 i;
+
+	/*
+	 * Scanning across all memblock might be expensive
+	 * on some big memory systems. Hence enable this
+	 * validation only with DEBUG_VM.
+	 */
+	if (!IS_ENABLED(CONFIG_DEBUG_VM))
+		return;
+
+	for_each_mem_range(i, &start, &end) {
+		for (addr = start; addr < end; addr += (1UL << PA_SECTION_SHIFT)) {
+			ms = __pfn_to_section(PHYS_PFN(addr));
+
+			/*
+			 * All memory ranges in the system at this point
+			 * should have been marked as early sections.
+			 */
+			WARN_ON(!early_section(ms));
+
+			/*
+			 * Memory notifier mechanism here to prevent boot
+			 * memory offlining depends on the fact that each
+			 * early section memory on the system is initially
+			 * online. Otherwise a given memory section which
+			 * is already offline will be overlooked and can
+			 * be removed completely. Call out such sections.
+			 */
+			if (!online_section(ms))
+				pr_err("Boot memory [%llx %llx] is offline, can be removed\n",
+					addr, addr + (1UL << PA_SECTION_SHIFT));
+		}
+	}
+}
+
 static int __init prevent_bootmem_remove_init(void)
 {
-	return register_memory_notifier(&prevent_bootmem_remove_nb);
+	int ret = 0;
+
+	if (!IS_ENABLED(CONFIG_MEMORY_HOTREMOVE))
+		return ret;
+
+	validate_bootmem_online();
+	ret = register_memory_notifier(&prevent_bootmem_remove_nb);
+	if (ret)
+		pr_err("%s: Notifier registration failed %d\n", __func__, ret);
+
+	return ret;
 }
-device_initcall(prevent_bootmem_remove_init);
+early_initcall(prevent_bootmem_remove_init);
 #endif

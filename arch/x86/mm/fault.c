@@ -9,7 +9,6 @@
 #include <linux/kdebug.h>		/* oops_begin/end, ...		*/
 #include <linux/extable.h>		/* search_exception_tables	*/
 #include <linux/memblock.h>		/* max_low_pfn			*/
-#include <linux/kfence.h>		/* kfence_handle_page_fault	*/
 #include <linux/kprobes.h>		/* NOKPROBE_SYMBOL, ...		*/
 #include <linux/mmiotrace.h>		/* kmmio_handler, ...		*/
 #include <linux/perf_event.h>		/* perf_sw_event		*/
@@ -31,6 +30,7 @@
 #include <asm/cpu_entry_area.h>		/* exception stack		*/
 #include <asm/pgtable_areas.h>		/* VMALLOC_START, ...		*/
 #include <asm/kvm_para.h>		/* kvm_handle_async_pf		*/
+#include <asm/vdso.h>			/* fixup_vdso_exception()	*/
 
 #define CREATE_TRACE_POINTS
 #include <asm/trace/exceptions.h>
@@ -54,7 +54,7 @@ kmmio_fault(struct pt_regs *regs, unsigned long addr)
  * 32-bit mode:
  *
  *   Sometimes AMD Athlon/Opteron CPUs report invalid exceptions on prefetch.
- *   Check that here and ignore it.  This is AMD erratum #91.
+ *   Check that here and ignore it.
  *
  * 64-bit mode:
  *
@@ -83,7 +83,11 @@ check_prefetch_opcode(struct pt_regs *regs, unsigned char *instr,
 #ifdef CONFIG_X86_64
 	case 0x40:
 		/*
-		 * In 64-bit mode 0x40..0x4F are valid REX prefixes
+		 * In AMD64 long mode 0x40..0x4F are valid REX prefixes
+		 * Need to figure out under what instruction mode the
+		 * instruction was issued. Could check the LDT for lm,
+		 * but for now it's good enough to assume that long
+		 * mode only uses well known segments or kernel.
 		 */
 		return (!user_mode(regs) || user_64bit_mode(regs));
 #endif
@@ -123,31 +127,20 @@ is_prefetch(struct pt_regs *regs, unsigned long error_code, unsigned long addr)
 	instr = (void *)convert_ip_to_linear(current, regs);
 	max_instr = instr + 15;
 
-	/*
-	 * This code has historically always bailed out if IP points to a
-	 * not-present page (e.g. due to a race).  No one has ever
-	 * complained about this.
-	 */
-	pagefault_disable();
+	if (user_mode(regs) && instr >= (unsigned char *)TASK_SIZE_MAX)
+		return 0;
 
 	while (instr < max_instr) {
 		unsigned char opcode;
 
-		if (user_mode(regs)) {
-			if (get_user(opcode, instr))
-				break;
-		} else {
-			if (get_kernel_nofault(opcode, instr))
-				break;
-		}
+		if (get_kernel_nofault(opcode, instr))
+			break;
 
 		instr++;
 
 		if (!check_prefetch_opcode(regs, instr, opcode, &prefetch))
 			break;
 	}
-
-	pagefault_enable();
 	return prefetch;
 }
 
@@ -610,11 +603,9 @@ pgtable_bad(struct pt_regs *regs, unsigned long error_code,
 	oops_end(flags, regs, sig);
 }
 
-static void set_signal_archinfo(unsigned long address,
-				unsigned long error_code)
+static void sanitize_error_code(unsigned long address,
+				unsigned long *error_code)
 {
-	struct task_struct *tsk = current;
-
 	/*
 	 * To avoid leaking information about the kernel page
 	 * table layout, pretend that user-mode accesses to
@@ -625,7 +616,13 @@ static void set_signal_archinfo(unsigned long address,
 	 * information and does not appear to cause any problems.
 	 */
 	if (address >= TASK_SIZE_MAX)
-		error_code |= X86_PF_PROT;
+		*error_code |= X86_PF_PROT;
+}
+
+static void set_signal_archinfo(unsigned long address,
+				unsigned long error_code)
+{
+	struct task_struct *tsk = current;
 
 	tsk->thread.trap_nr = X86_TRAP_PF;
 	tsk->thread.error_code = error_code | X86_PF_USER;
@@ -666,6 +663,8 @@ no_context(struct pt_regs *regs, unsigned long error_code,
 		 * faulting through the emulate_vsyscall() logic.
 		 */
 		if (current->thread.sig_on_uaccess_err && signal) {
+			sanitize_error_code(address, &error_code);
+
 			set_signal_archinfo(address, error_code);
 
 			/* XXX: hwpoison faults will set the wrong code. */
@@ -732,11 +731,6 @@ no_context(struct pt_regs *regs, unsigned long error_code,
 	 */
 	if (IS_ENABLED(CONFIG_EFI))
 		efi_recover_from_page_fault(address);
-
-	/* Only not-present faults should be handled by KFENCE. */
-	if (!(error_code & X86_PF_PROT) &&
-	    kfence_handle_page_fault(address, error_code & X86_PF_WRITE, regs))
-		return;
 
 oops:
 	/*
@@ -819,13 +813,10 @@ __bad_area_nosemaphore(struct pt_regs *regs, unsigned long error_code,
 		if (is_errata100(regs, address))
 			return;
 
-		/*
-		 * To avoid leaking information about the kernel page table
-		 * layout, pretend that user-mode accesses to kernel addresses
-		 * are always protection faults.
-		 */
-		if (address >= TASK_SIZE_MAX)
-			error_code |= X86_PF_PROT;
+		sanitize_error_code(address, &error_code);
+
+		if (fixup_vdso_exception(regs, X86_TRAP_PF, error_code, address))
+			return;
 
 		if (likely(show_unhandled_signals))
 			show_signal_msg(regs, error_code, address, tsk);
@@ -942,6 +933,11 @@ do_sigbus(struct pt_regs *regs, unsigned long error_code, unsigned long address,
 
 	/* User-space => ok to do another page fault: */
 	if (is_prefetch(regs, error_code, address))
+		return;
+
+	sanitize_error_code(address, &error_code);
+
+	if (fixup_vdso_exception(regs, X86_TRAP_PF, error_code, address))
 		return;
 
 	set_signal_archinfo(address, error_code);
@@ -1115,6 +1111,18 @@ access_error(unsigned long error_code, struct vm_area_struct *vma)
 		return 1;
 
 	/*
+	 * SGX hardware blocked the access.  This usually happens
+	 * when the enclave memory contents have been destroyed, like
+	 * after a suspend/resume cycle. In any case, the kernel can't
+	 * fix the cause of the fault.  Handle the fault as an access
+	 * error even in cases where no actual access violation
+	 * occurred.  This allows userspace to rebuild the enclave in
+	 * response to the signal.
+	 */
+	if (unlikely(error_code & X86_PF_SGX))
+		return 1;
+
+	/*
 	 * Make sure to check the VMA so that we do not perform
 	 * faults just to hit a X86_PF_PK as soon as we fill in a
 	 * page.
@@ -1227,7 +1235,7 @@ void do_user_addr_fault(struct pt_regs *regs,
 			unsigned long hw_error_code,
 			unsigned long address)
 {
-	struct vm_area_struct *vma = NULL;
+	struct vm_area_struct *vma;
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	vm_fault_t fault;
@@ -1312,16 +1320,6 @@ void do_user_addr_fault(struct pt_regs *regs,
 #endif
 
 	/*
-	 * Do not try to do a speculative page fault if the fault was due to
-	 * protection keys since it can't be resolved.
-	 */
-	if (!(hw_error_code & X86_PF_PK)) {
-		fault = handle_speculative_fault(mm, address, flags, &vma);
-		if (fault != VM_FAULT_RETRY)
-			goto done;
-	}
-
-	/*
 	 * Kernel-mode access to the user address space should only occur
 	 * on well-defined single instructions listed in the exception
 	 * tables.  But, an erroneous kernel fault occurring outside one of
@@ -1353,8 +1351,7 @@ retry:
 		might_sleep();
 	}
 
-	if (!vma || !can_reuse_spf_vma(vma, address))
-		vma = find_vma(mm, address);
+	vma = find_vma(mm, address);
 	if (unlikely(!vma)) {
 		bad_area(regs, hw_error_code, address);
 		return;
@@ -1411,19 +1408,10 @@ good_area:
 	if (unlikely((fault & VM_FAULT_RETRY) &&
 		     (flags & FAULT_FLAG_ALLOW_RETRY))) {
 		flags |= FAULT_FLAG_TRIED;
-
-		/*
-		 * Do not try to reuse this vma and fetch it
-		 * again since we will release the mmap_sem.
-		 */
-		vma = NULL;
-
 		goto retry;
 	}
 
 	mmap_read_unlock(mm);
-
-done:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		mm_fault_error(regs, hw_error_code, address, fault);
 		return;

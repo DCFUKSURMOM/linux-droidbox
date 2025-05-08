@@ -520,13 +520,12 @@ fastrpc_map_dma_buf(struct dma_buf_attachment *attachment,
 {
 	struct fastrpc_dma_buf_attachment *a = attachment->priv;
 	struct sg_table *table;
-	int ret;
 
 	table = &a->sgt;
 
-	ret = dma_map_sgtable(attachment->dev, table, dir, 0);
-	if (ret)
-		table = ERR_PTR(ret);
+	if (!dma_map_sgtable(attachment->dev, table, dir, 0))
+		return ERR_PTR(-ENOMEM);
+
 	return table;
 }
 
@@ -587,11 +586,13 @@ static void fastrpc_dma_buf_detatch(struct dma_buf *dmabuf,
 	kfree(a);
 }
 
-static void *fastrpc_vmap(struct dma_buf *dmabuf)
+static int fastrpc_vmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct fastrpc_buf *buf = dmabuf->priv;
 
-	return buf->virt;
+	dma_buf_map_set_vaddr(map, buf->virt);
+
+	return 0;
 }
 
 static int fastrpc_mmap(struct dma_buf *dmabuf,
@@ -947,11 +948,6 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 
 	if (!fl->cctx->rpdev)
 		return -EPIPE;
-
-	if (handle == FASTRPC_INIT_HANDLE && !kernel) {
-		dev_warn_ratelimited(fl->sctx->dev, "user app trying to send a kernel RPC message (%d)\n",  handle);
-		return -EPERM;
-	}
 
 	ctx = fastrpc_context_alloc(fl, kernel, sc, args);
 	if (IS_ERR(ctx))

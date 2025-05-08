@@ -250,6 +250,11 @@ should also read
 :ref:`Documentation/process/stable-kernel-rules.rst <stable_kernel_rules>`
 in addition to this file.
 
+Note, however, that some subsystem maintainers want to come to their own
+conclusions on which patches should go to the stable trees.  The networking
+maintainer, in particular, would rather not see individual developers
+adding lines like the above to their patches.
+
 If changes affect userland-kernel interfaces, please send the MAN-PAGES
 maintainer (as listed in the MAINTAINERS file) a man-pages patch, or at
 least a notification of the change, so that some information makes its way
@@ -399,10 +404,18 @@ then you just add a line saying::
 
 using your real name (sorry, no pseudonyms or anonymous contributions.)
 This will be done for you automatically if you use ``git commit -s``.
+Reverts should also include "Signed-off-by". ``git revert -s`` does that
+for you.
 
 Some people also put extra tags at the end.  They'll just be ignored for
 now, but you can do this to mark internal company procedures or just
 point out some special detail about the sign-off.
+
+Any further SoBs (Signed-off-by:'s) following the author's SoB are from
+people handling and transporting the patch, but were not involved in its
+development. SoB chains should reflect the **real** route a patch took
+as it was propagated to the maintainers and ultimately to Linus, with
+the first SoB entry signalling primary authorship of a single author.
 
 
 When to use Acked-by:, Cc:, and Co-developed-by:
@@ -439,7 +452,7 @@ patch.  This tag documents that potentially interested parties
 have been included in the discussion.
 
 Co-developed-by: states that the patch was co-created by multiple developers;
-it is a used to give attribution to co-authors (in addition to the author
+it is used to give attribution to co-authors (in addition to the author
 attributed by the From: tag) when several people work on a single patch.  Since
 Co-developed-by: denotes authorship, every Co-developed-by: must be immediately
 followed by a Signed-off-by: of the associated co-author.  Standard sign-off

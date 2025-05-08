@@ -44,7 +44,6 @@
 #include <asm/futex.h>
 
 #include "locking/rtmutex_common.h"
-#include <trace/hooks/futex.h>
 
 /*
  * READ this before attempting to hack on futexes!
@@ -311,8 +310,6 @@ static inline bool should_fail_futex(bool fshared)
 
 #ifdef CONFIG_COMPAT
 static void compat_exit_robust_list(struct task_struct *curr);
-#else
-static inline void compat_exit_robust_list(struct task_struct *curr) { }
 #endif
 
 /*
@@ -2227,7 +2224,6 @@ queue_unlock(struct futex_hash_bucket *hb)
 static inline void __queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
 {
 	int prio;
-	bool already_on_hb = false;
 
 	/*
 	 * The priority used to register this element is
@@ -2240,9 +2236,7 @@ static inline void __queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
 	prio = min(current->normal_prio, MAX_RT_PRIO);
 
 	plist_node_init(&q->list, prio);
-	trace_android_vh_alter_futex_plist_add(&q->list, &hb->chain, &already_on_hb);
-	if (!already_on_hb)
-		plist_add(&q->list, &hb->chain);
+	plist_add(&q->list, &hb->chain);
 	q->task = current;
 }
 
@@ -2734,13 +2728,14 @@ retry:
 		goto out;
 
 	restart = &current->restart_block;
+	restart->fn = futex_wait_restart;
 	restart->futex.uaddr = uaddr;
 	restart->futex.val = val;
 	restart->futex.time = *abs_time;
 	restart->futex.bitset = bitset;
 	restart->futex.flags = flags | FLAGS_HAS_TIMEOUT;
 
-	ret = set_restart_fn(restart, futex_wait_restart);
+	ret = -ERESTART_RESTARTBLOCK;
 
 out:
 	if (to) {

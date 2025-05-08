@@ -1269,8 +1269,8 @@ static int st_open(struct inode *inode, struct file *filp)
 	spin_lock(&st_use_lock);
 	if (STp->in_use) {
 		spin_unlock(&st_use_lock);
-		DEBC_printk(STp, "Device already in use.\n");
 		scsi_tape_put(STp);
+		DEBC_printk(STp, "Device already in use.\n");
 		return (-EBUSY);
 	}
 
@@ -2846,7 +2846,6 @@ static int st_int_ioctl(struct scsi_tape *STp, unsigned int cmd_in, unsigned lon
 	case MTNOP:
 		DEBC_printk(STp, "No op on tape.\n");
 		return 0;	/* Should do something ? */
-		break;
 	case MTRETEN:
 		cmd[0] = START_STOP;
 		if (STp->immediate) {

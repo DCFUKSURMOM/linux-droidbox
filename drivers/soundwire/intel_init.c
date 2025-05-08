@@ -405,12 +405,11 @@ int sdw_intel_acpi_scan(acpi_handle *parent_handle,
 {
 	acpi_status status;
 
-	info->handle = NULL;
 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE,
 				     parent_handle, 1,
 				     sdw_intel_acpi_cb,
 				     NULL, info, NULL);
-	if (ACPI_FAILURE(status) || info->handle == NULL)
+	if (ACPI_FAILURE(status))
 		return -ENODEV;
 
 	return sdw_intel_scan_controller(info);

@@ -222,9 +222,22 @@ static int bcm_sf2_port_setup(struct dsa_switch *ds, int port,
 	reg &= ~P_TXQ_PSM_VDD(port);
 	core_writel(priv, reg, CORE_MEM_PSM_VDD_CTRL);
 
+	/* Enable learning */
+	reg = core_readl(priv, CORE_DIS_LEARN);
+	reg &= ~BIT(port);
+	core_writel(priv, reg, CORE_DIS_LEARN);
+
 	/* Enable Broadcom tags for that port if requested */
-	if (priv->brcm_tag_mask & BIT(port))
+	if (priv->brcm_tag_mask & BIT(port)) {
 		b53_brcm_hdr_setup(ds, port);
+
+		/* Disable learning on ASP port */
+		if (port == 7) {
+			reg = core_readl(priv, CORE_DIS_LEARN);
+			reg |= BIT(port);
+			core_writel(priv, reg, CORE_DIS_LEARN);
+		}
+	}
 
 	/* Configure Traffic Class to QoS mapping, allow each priority to map
 	 * to a different queue number
@@ -584,10 +597,8 @@ static u32 bcm_sf2_sw_get_phy_flags(struct dsa_switch *ds, int port)
 	 * in bits 15:8 and the patch level in bits 7:0 which is exactly what
 	 * the REG_PHY_REVISION register layout is.
 	 */
-	if (priv->int_phy_mask & BIT(port))
-		return priv->hw_params.gphy_rev;
-	else
-		return 0;
+
+	return priv->hw_params.gphy_rev;
 }
 
 static void bcm_sf2_sw_validate(struct dsa_switch *ds, int port,

@@ -308,9 +308,6 @@ static struct quirk_entry *quirks;
 
 static void __init set_quirks(void)
 {
-	if (!interface)
-		return;
-
 	if (quirks->mailled)
 		interface->capability |= ACER_CAP_MAILLED;
 
@@ -690,8 +687,6 @@ static void __init find_quirks(void)
 
 	if (quirks == NULL)
 		quirks = &quirk_unknown;
-
-	set_quirks();
 }
 
 /*
@@ -834,7 +829,6 @@ static acpi_status AMW0_set_u32(u32 value, u32 cap)
 		switch (quirks->brightness) {
 		default:
 			return ec_write(0x83, value);
-			break;
 		}
 	default:
 		return AE_ERROR;

@@ -7,6 +7,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/ethtool.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/etherdevice.h>
@@ -907,16 +908,8 @@ static int geneve_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 
 		info = skb_tunnel_info(skb);
 		if (info) {
-			struct ip_tunnel_info *unclone;
-
-			unclone = skb_tunnel_info_unclone(skb);
-			if (unlikely(!unclone)) {
-				dst_release(&rt->dst);
-				return -ENOMEM;
-			}
-
-			unclone->key.u.ipv4.dst = fl4.saddr;
-			unclone->key.u.ipv4.src = fl4.daddr;
+			info->key.u.ipv4.dst = fl4.saddr;
+			info->key.u.ipv4.src = fl4.daddr;
 		}
 
 		if (!pskb_may_pull(skb, ETH_HLEN)) {
@@ -1000,16 +993,8 @@ static int geneve6_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 		struct ip_tunnel_info *info = skb_tunnel_info(skb);
 
 		if (info) {
-			struct ip_tunnel_info *unclone;
-
-			unclone = skb_tunnel_info_unclone(skb);
-			if (unlikely(!unclone)) {
-				dst_release(dst);
-				return -ENOMEM;
-			}
-
-			unclone->key.u.ipv6.dst = fl6.saddr;
-			unclone->key.u.ipv6.src = fl6.daddr;
+			info->key.u.ipv6.dst = fl6.saddr;
+			info->key.u.ipv6.src = fl6.daddr;
 		}
 
 		if (!pskb_may_pull(skb, ETH_HLEN)) {
@@ -1153,7 +1138,7 @@ static const struct net_device_ops geneve_netdev_ops = {
 	.ndo_open		= geneve_open,
 	.ndo_stop		= geneve_stop,
 	.ndo_start_xmit		= geneve_xmit,
-	.ndo_get_stats64	= ip_tunnel_get_stats64,
+	.ndo_get_stats64	= dev_get_tstats64,
 	.ndo_change_mtu		= geneve_change_mtu,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,

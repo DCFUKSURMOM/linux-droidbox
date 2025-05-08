@@ -918,7 +918,7 @@ static int ab8500_gpadc_read_raw(struct iio_dev *indio_dev,
 			return processed;
 
 		/* Return millivolt or milliamps or millicentigrades */
-		*val = processed;
+		*val = processed * 1000;
 		return IIO_VAL_INT;
 	}
 

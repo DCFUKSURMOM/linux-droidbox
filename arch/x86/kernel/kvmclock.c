@@ -44,7 +44,6 @@ static int __init parse_no_kvmclock_vsyscall(char *arg)
 early_param("no-kvmclock-vsyscall", parse_no_kvmclock_vsyscall);
 
 /* Aligned to page sizes to match whats mapped via vsyscalls to userspace */
-#define HV_CLOCK_SIZE	(sizeof(struct pvclock_vsyscall_time_info) * NR_CPUS)
 #define HVC_BOOT_ARRAY_SIZE \
 	(PAGE_SIZE / sizeof(struct pvclock_vsyscall_time_info))
 
@@ -269,19 +268,20 @@ static void __init kvmclock_init_mem(void)
 
 static int __init kvm_setup_vsyscall_timeinfo(void)
 {
-	kvmclock_init_mem();
-
 #ifdef CONFIG_X86_64
-	if (per_cpu(hv_clock_per_cpu, 0) && kvmclock_vsyscall) {
-		u8 flags;
+	u8 flags;
 
-		flags = pvclock_read_flags(&hv_clock_boot[0].pvti);
-		if (!(flags & PVCLOCK_TSC_STABLE_BIT))
-			return 0;
+	if (!per_cpu(hv_clock_per_cpu, 0) || !kvmclock_vsyscall)
+		return 0;
 
-		kvm_clock.vdso_clock_mode = VDSO_CLOCKMODE_PVCLOCK;
-	}
+	flags = pvclock_read_flags(&hv_clock_boot[0].pvti);
+	if (!(flags & PVCLOCK_TSC_STABLE_BIT))
+		return 0;
+
+	kvm_clock.vdso_clock_mode = VDSO_CLOCKMODE_PVCLOCK;
 #endif
+
+	kvmclock_init_mem();
 
 	return 0;
 }

@@ -1741,7 +1741,7 @@ static int ip_route_input_mc(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 		flags |= RTCF_LOCAL;
 
 	rth = rt_dst_alloc(dev_net(dev)->loopback_dev, flags, RTN_MULTICAST,
-			   IN_DEV_CONF_GET(in_dev, NOPOLICY), false);
+			   IN_DEV_ORCONF(in_dev, NOPOLICY), false);
 	if (!rth)
 		return -ENOBUFS;
 
@@ -1857,8 +1857,8 @@ static int __mkroute_input(struct sk_buff *skb,
 	}
 
 	rth = rt_dst_alloc(out_dev->dev, 0, res->type,
-			   IN_DEV_CONF_GET(in_dev, NOPOLICY),
-			   IN_DEV_CONF_GET(out_dev, NOXFRM));
+			   IN_DEV_ORCONF(in_dev, NOPOLICY),
+			   IN_DEV_ORCONF(out_dev, NOXFRM));
 	if (!rth) {
 		err = -ENOBUFS;
 		goto cleanup;
@@ -2227,7 +2227,7 @@ local_input:
 
 	rth = rt_dst_alloc(l3mdev_master_dev_rcu(dev) ? : net->loopback_dev,
 			   flags | RTCF_LOCAL, res->type,
-			   IN_DEV_CONF_GET(in_dev, NOPOLICY), false);
+			   IN_DEV_ORCONF(in_dev, NOPOLICY), false);
 	if (!rth)
 		goto e_nobufs;
 
@@ -2450,8 +2450,8 @@ static struct rtable *__mkroute_output(const struct fib_result *res,
 
 add:
 	rth = rt_dst_alloc(dev_out, flags, type,
-			   IN_DEV_CONF_GET(in_dev, NOPOLICY),
-			   IN_DEV_CONF_GET(in_dev, NOXFRM));
+			   IN_DEV_ORCONF(in_dev, NOPOLICY),
+			   IN_DEV_ORCONF(in_dev, NOXFRM));
 	if (!rth)
 		return ERR_PTR(-ENOBUFS);
 
@@ -2682,15 +2682,44 @@ out:
 	return rth;
 }
 
+static struct dst_entry *ipv4_blackhole_dst_check(struct dst_entry *dst, u32 cookie)
+{
+	return NULL;
+}
+
+static unsigned int ipv4_blackhole_mtu(const struct dst_entry *dst)
+{
+	unsigned int mtu = dst_metric_raw(dst, RTAX_MTU);
+
+	return mtu ? : dst->dev->mtu;
+}
+
+static void ipv4_rt_blackhole_update_pmtu(struct dst_entry *dst, struct sock *sk,
+					  struct sk_buff *skb, u32 mtu,
+					  bool confirm_neigh)
+{
+}
+
+static void ipv4_rt_blackhole_redirect(struct dst_entry *dst, struct sock *sk,
+				       struct sk_buff *skb)
+{
+}
+
+static u32 *ipv4_rt_blackhole_cow_metrics(struct dst_entry *dst,
+					  unsigned long old)
+{
+	return NULL;
+}
+
 static struct dst_ops ipv4_dst_blackhole_ops = {
-	.family			= AF_INET,
-	.default_advmss		= ipv4_default_advmss,
-	.neigh_lookup		= ipv4_neigh_lookup,
-	.check			= dst_blackhole_check,
-	.cow_metrics		= dst_blackhole_cow_metrics,
-	.update_pmtu		= dst_blackhole_update_pmtu,
-	.redirect		= dst_blackhole_redirect,
-	.mtu			= dst_blackhole_mtu,
+	.family			=	AF_INET,
+	.check			=	ipv4_blackhole_dst_check,
+	.mtu			=	ipv4_blackhole_mtu,
+	.default_advmss		=	ipv4_default_advmss,
+	.update_pmtu		=	ipv4_rt_blackhole_update_pmtu,
+	.redirect		=	ipv4_rt_blackhole_redirect,
+	.cow_metrics		=	ipv4_rt_blackhole_cow_metrics,
+	.neigh_lookup		=	ipv4_neigh_lookup,
 };
 
 struct dst_entry *ipv4_blackhole_route(struct net *net, struct dst_entry *dst_orig)
@@ -2842,6 +2871,9 @@ static int rt_fill_info(struct net *net, __be32 dst, __be32 src,
 	}
 	if (rt->dst.dev &&
 	    nla_put_u32(skb, RTA_OIF, rt->dst.dev->ifindex))
+		goto nla_put_failure;
+	if (rt->dst.lwtstate &&
+	    lwtunnel_fill_encap(skb, rt->dst.lwtstate, RTA_ENCAP, RTA_ENCAP_TYPE) < 0)
 		goto nla_put_failure;
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	if (rt->dst.tclassid &&

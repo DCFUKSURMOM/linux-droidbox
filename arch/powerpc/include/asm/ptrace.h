@@ -53,17 +53,22 @@ struct pt_regs
 #ifdef CONFIG_PPC64
 			unsigned long ppr;
 #endif
+			union {
 #ifdef CONFIG_PPC_KUAP
-			unsigned long kuap;
+				unsigned long kuap;
+#endif
+#ifdef CONFIG_PPC_PKEY
+				unsigned long amr;
+#endif
+			};
+#ifdef CONFIG_PPC_PKEY
+			unsigned long iamr;
 #endif
 		};
-		unsigned long __pad[2];	/* Maintain 16 byte interrupt stack alignment */
+		unsigned long __pad[4];	/* Maintain 16 byte interrupt stack alignment */
 	};
 };
 #endif
-
-
-#define STACK_FRAME_WITH_PT_REGS (STACK_FRAME_OVERHEAD + sizeof(struct pt_regs))
 
 #ifdef __powerpc64__
 
@@ -174,12 +179,6 @@ static inline void regs_set_return_value(struct pt_regs *regs, unsigned long rc)
 		set_thread_flag(TIF_NOERROR); \
 	} while(0)
 
-struct task_struct;
-extern int ptrace_get_reg(struct task_struct *task, int regno,
-			  unsigned long *data);
-extern int ptrace_put_reg(struct task_struct *task, int regno,
-			  unsigned long data);
-
 #define current_pt_regs() \
 	((struct pt_regs *)((unsigned long)task_stack_page(current) + THREAD_SIZE) - 1)
 
@@ -193,7 +192,7 @@ extern int ptrace_put_reg(struct task_struct *task, int regno,
 #define TRAP_FLAGS_MASK		0x11
 #define TRAP(regs)		((regs)->trap & ~TRAP_FLAGS_MASK)
 #define FULL_REGS(regs)		(((regs)->trap & 1) == 0)
-#define SET_FULL_REGS(regs)	((regs)->trap &= ~1)
+#define SET_FULL_REGS(regs)	((regs)->trap |= 1)
 #endif
 #define CHECK_FULL_REGS(regs)	BUG_ON(!FULL_REGS(regs))
 #define NV_REG_POISON		0xdeadbeefdeadbeefUL
@@ -208,7 +207,7 @@ extern int ptrace_put_reg(struct task_struct *task, int regno,
 #define TRAP_FLAGS_MASK		0x1F
 #define TRAP(regs)		((regs)->trap & ~TRAP_FLAGS_MASK)
 #define FULL_REGS(regs)		(((regs)->trap & 1) == 0)
-#define SET_FULL_REGS(regs)	((regs)->trap &= ~1)
+#define SET_FULL_REGS(regs)	((regs)->trap |= 1)
 #define IS_CRITICAL_EXC(regs)	(((regs)->trap & 2) != 0)
 #define IS_MCHECK_EXC(regs)	(((regs)->trap & 4) != 0)
 #define IS_DEBUG_EXC(regs)	(((regs)->trap & 8) != 0)

@@ -62,23 +62,6 @@
 #define DMA_ATTR_PRIVILEGED		(1UL << 9)
 
 /*
- * DMA_ATTR_SYS_CACHE_ONLY: used to indicate that the buffer should be mapped
- * with the correct memory attributes so that it can be cached in the system
- * or last level cache. This is useful for buffers that are being mapped for
- * devices that are non-coherent, but can use the system cache.
- */
-#define DMA_ATTR_SYS_CACHE_ONLY		(1UL << 10)
-
-/*
- * DMA_ATTR_SYS_CACHE_ONLY_NWA: used to indicate that the buffer should be
- * mapped with the correct memory attributes so that it can be cached in the
- * system or last level cache, with a no write allocate cache policy. This is
- * useful for buffers that are being mapped for devices that are non-coherent,
- * but can use the system cache.
- */
-#define DMA_ATTR_SYS_CACHE_ONLY_NWA	(1UL << 11)
-
-/*
  * A dma_addr_t can hold any valid DMA or bus address for the platform.  It can
  * be given to a device to use as a DMA source or target.  It is specific to a
  * given device and there may be a translation between the CPU physical address
@@ -574,14 +557,5 @@ static inline int dma_mmap_wc(struct device *dev,
 #define dma_unmap_len(PTR, LEN_NAME)             (0)
 #define dma_unmap_len_set(PTR, LEN_NAME, VAL)    do { } while (0)
 #endif
-
-/*
- * Legacy interface to set up the dma offset map.  Drivers really should not
- * actually use it, but we have a few legacy cases left.
- */
-int dma_direct_set_offset(struct device *dev, phys_addr_t cpu_start,
-		dma_addr_t dma_start, u64 size);
-
-extern const struct dma_map_ops dma_virt_ops;
 
 #endif /* _LINUX_DMA_MAPPING_H */

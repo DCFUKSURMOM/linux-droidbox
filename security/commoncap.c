@@ -25,6 +25,10 @@
 #include <linux/binfmts.h>
 #include <linux/personality.h>
 
+#ifdef CONFIG_ANDROID_PARANOID_NETWORK
+#include <linux/android_aid.h>
+#endif
+
 /*
  * If a non-root user executes a setuid-root binary in
  * !secure(SECURE_NOROOT) mode, then we raise capabilities.
@@ -66,6 +70,13 @@ int cap_capable(const struct cred *cred, struct user_namespace *targ_ns,
 		int cap, unsigned int opts)
 {
 	struct user_namespace *ns = targ_ns;
+
+#ifdef CONFIG_ANDROID_PARANOID_NETWORK
+	if (cap == CAP_NET_RAW && in_egroup_p(AID_NET_RAW))
+		return 0;
+	if (cap == CAP_NET_ADMIN && in_egroup_p(AID_NET_ADMIN))
+		return 0;
+#endif
 
 	/* See if cred has the capability in the target user namespace
 	 * by examining the target user namespace and all of the target
@@ -297,8 +308,7 @@ int cap_inode_need_killpriv(struct dentry *dentry)
 	struct inode *inode = d_backing_inode(dentry);
 	int error;
 
-	error = __vfs_getxattr(dentry, inode, XATTR_NAME_CAPS, NULL, 0,
-			       XATTR_NOSECURITY);
+	error = __vfs_getxattr(dentry, inode, XATTR_NAME_CAPS, NULL, 0);
 	return error > 0;
 }
 
@@ -493,7 +503,7 @@ static bool validheader(size_t size, const struct vfs_cap_data *cap)
  *
  * If all is ok, we return the new size, on error return < 0.
  */
-int cap_convert_nscap(struct dentry *dentry, void **ivalue, size_t size)
+int cap_convert_nscap(struct dentry *dentry, const void **ivalue, size_t size)
 {
 	struct vfs_ns_cap_data *nscap;
 	uid_t nsrootid;
@@ -536,7 +546,6 @@ int cap_convert_nscap(struct dentry *dentry, void **ivalue, size_t size)
 	nscap->magic_etc = cpu_to_le32(nsmagic);
 	memcpy(&nscap->data, &cap->data, sizeof(__le32) * 2 * VFS_CAP_U32);
 
-	kvfree(*ivalue);
 	*ivalue = nscap;
 	return newsize;
 }
@@ -606,8 +615,7 @@ int get_vfs_caps_from_disk(const struct dentry *dentry, struct cpu_vfs_cap_data 
 
 	fs_ns = inode->i_sb->s_user_ns;
 	size = __vfs_getxattr((struct dentry *)dentry, inode,
-			      XATTR_NAME_CAPS, &data, XATTR_CAPS_SZ,
-			      XATTR_NOSECURITY);
+			      XATTR_NAME_CAPS, &data, XATTR_CAPS_SZ);
 	if (size == -ENODATA || size == -EOPNOTSUPP)
 		/* no data, that's ok */
 		return -ENODATA;

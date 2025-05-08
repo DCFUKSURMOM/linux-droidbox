@@ -46,7 +46,6 @@
 #include <linux/livepatch.h>
 #include <linux/cgroup.h>
 #include <linux/audit.h>
-#include <linux/oom.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -57,8 +56,6 @@
 #include <asm/siginfo.h>
 #include <asm/cacheflush.h>
 
-#undef CREATE_TRACE_POINTS
-#include <trace/hooks/signal.h>
 /*
  * SLAB caches for signal bits.
  */
@@ -66,18 +63,6 @@
 static struct kmem_cache *sigqueue_cachep;
 
 int print_fatal_signals __read_mostly;
-
-static char reaper_comm[TASK_COMM_LEN];
-
-static __init int setup_mem_reap(char *str)
-{
-	if (!str)
-		return 0;
-	strlcpy(reaper_comm, str, TASK_COMM_LEN);
-
-	return 1;
-}
-__setup("reap_mem_when_killed_by=", setup_mem_reap);
 
 static void __user *sig_handler(struct task_struct *t, int sig)
 {
@@ -999,7 +984,7 @@ static inline bool wants_signal(int sig, struct task_struct *p)
 	if (task_is_stopped_or_traced(p))
 		return false;
 
-	return task_curr(p) || !signal_pending(p);
+	return task_curr(p) || !task_sigpending(p);
 }
 
 static void complete_signal(int sig, struct task_struct *p, enum pid_type type)
@@ -1301,7 +1286,7 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
 {
 	unsigned long flags;
 	int ret = -ESRCH;
-	trace_android_vh_do_send_sig_info(sig, current, p);
+
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, type);
 		unlock_task_sighand(p, &flags);
@@ -1412,7 +1397,6 @@ struct sighand_struct *__lock_task_sighand(struct task_struct *tsk,
 
 	return sighand;
 }
-EXPORT_SYMBOL_GPL(__lock_task_sighand);
 
 /*
  * send signal info to all the members of a group
@@ -1426,12 +1410,8 @@ int group_send_sig_info(int sig, struct kernel_siginfo *info,
 	ret = check_kill_permission(sig, info, p);
 	rcu_read_unlock();
 
-	if (!ret && sig) {
+	if (!ret && sig)
 		ret = do_send_sig_info(sig, info, p, type);
-		if (!ret && sig == SIGKILL &&
-			!strcmp(current->comm, reaper_comm))
-			add_to_oom_reaper(p);
-	}
 
 	return ret;
 }
@@ -2570,6 +2550,21 @@ bool get_signal(struct ksignal *ksig)
 	struct signal_struct *signal = current->signal;
 	int signr;
 
+	if (unlikely(current->task_works))
+		task_work_run();
+
+	/*
+	 * For non-generic architectures, check for TIF_NOTIFY_SIGNAL so
+	 * that the arch handlers don't all have to do it. If we get here
+	 * without TIF_SIGPENDING, just exit after running signal work.
+	 */
+	if (!IS_ENABLED(CONFIG_GENERIC_ENTRY)) {
+		if (test_thread_flag(TIF_NOTIFY_SIGNAL))
+			tracehook_notify_signal();
+		if (!task_sigpending(current))
+			return false;
+	}
+
 	if (unlikely(uprobe_deny_signal()))
 		return false;
 
@@ -2582,26 +2577,6 @@ bool get_signal(struct ksignal *ksig)
 
 relock:
 	spin_lock_irq(&sighand->siglock);
-	/*
-	 * Make sure we can safely read ->jobctl() in task_work add. As Oleg
-	 * states:
-	 *
-	 * It pairs with mb (implied by cmpxchg) before READ_ONCE. So we
-	 * roughly have
-	 *
-	 *	task_work_add:				get_signal:
-	 *	STORE(task->task_works, new_work);	STORE(task->jobctl);
-	 *	mb();					mb();
-	 *	LOAD(task->jobctl);			LOAD(task->task_works);
-	 *
-	 * and we can rely on STORE-MB-LOAD [ in task_work_add].
-	 */
-	smp_store_mb(current->jobctl, current->jobctl & ~JOBCTL_TASK_WORK);
-	if (unlikely(current->task_works)) {
-		spin_unlock_irq(&sighand->siglock);
-		task_work_run();
-		goto relock;
-	}
 
 	/*
 	 * Every stopped thread goes here after wakeup. Check to see if
@@ -2867,7 +2842,7 @@ static void retarget_shared_pending(struct task_struct *tsk, sigset_t *which)
 		/* Remove the signals this thread can handle. */
 		sigandsets(&retarget, &retarget, &t->blocked);
 
-		if (!signal_pending(t))
+		if (!task_sigpending(t))
 			signal_wake_up(t, 0);
 
 		if (sigisemptyset(&retarget))
@@ -2901,7 +2876,7 @@ void exit_signals(struct task_struct *tsk)
 
 	cgroup_threadgroup_change_end(tsk);
 
-	if (!signal_pending(tsk))
+	if (!task_sigpending(tsk))
 		goto out;
 
 	unblocked = tsk->blocked;
@@ -2945,7 +2920,7 @@ long do_no_restart_syscall(struct restart_block *param)
 
 static void __set_task_blocked(struct task_struct *tsk, const sigset_t *newset)
 {
-	if (signal_pending(tsk) && !thread_group_empty(tsk)) {
+	if (task_sigpending(tsk) && !thread_group_empty(tsk)) {
 		sigset_t newblocked;
 		/* A set of now blocked but previously unblocked signals. */
 		sigandnsets(&newblocked, newset, &current->blocked);
@@ -3729,7 +3704,8 @@ static bool access_pidfd_pidns(struct pid *pid)
 	return true;
 }
 
-static int copy_siginfo_from_user_any(kernel_siginfo_t *kinfo, siginfo_t *info)
+static int copy_siginfo_from_user_any(kernel_siginfo_t *kinfo,
+		siginfo_t __user *info)
 {
 #ifdef CONFIG_COMPAT
 	/*

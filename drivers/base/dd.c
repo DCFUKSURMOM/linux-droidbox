@@ -97,9 +97,6 @@ static void deferred_probe_work_func(struct work_struct *work)
 
 		get_device(dev);
 
-		kfree(dev->p->deferred_probe_reason);
-		dev->p->deferred_probe_reason = NULL;
-
 		/*
 		 * Drop the mutex while probing each device; the probe path may
 		 * manipulate the deferred list
@@ -185,7 +182,7 @@ static void driver_deferred_probe_trigger(void)
 	 * Kick the re-probe thread.  It may already be scheduled, but it is
 	 * safe to kick it again.
 	 */
-	queue_work(system_unbound_wq, &deferred_probe_work);
+	schedule_work(&deferred_probe_work);
 }
 
 /**
@@ -292,16 +289,14 @@ int driver_deferred_probe_check_state(struct device *dev)
 
 static void deferred_probe_timeout_work_func(struct work_struct *work)
 {
-	struct device_private *p;
+	struct device_private *private, *p;
 
 	driver_deferred_probe_timeout = 0;
 	driver_deferred_probe_trigger();
 	flush_work(&deferred_probe_work);
 
-	mutex_lock(&deferred_probe_mutex);
-	list_for_each_entry(p, &deferred_probe_pending_list, deferred_probe)
-		dev_info(p->device, "deferred probe pending\n");
-	mutex_unlock(&deferred_probe_mutex);
+	list_for_each_entry_safe(private, p, &deferred_probe_pending_list, deferred_probe)
+		dev_info(private->device, "deferred probe pending\n");
 	wake_up_all(&probe_timeout_waitqueue);
 }
 static DECLARE_DELAYED_WORK(deferred_probe_timeout_work, deferred_probe_timeout_work_func);
@@ -724,7 +719,7 @@ EXPORT_SYMBOL_GPL(wait_for_device_probe);
  *
  * If the device has a parent, runtime-resume the parent before driver probing.
  */
-int driver_probe_device(struct device_driver *drv, struct device *dev)
+static int driver_probe_device(struct device_driver *drv, struct device *dev)
 {
 	int ret = 0;
 

@@ -631,6 +631,7 @@ static void netsec_set_rx_de(struct netsec_priv *priv,
 static bool netsec_clean_tx_dring(struct netsec_priv *priv)
 {
 	struct netsec_desc_ring *dring = &priv->desc_ring[NETSEC_RING_TX];
+	struct xdp_frame_bulk bq;
 	struct netsec_de *entry;
 	int tail = dring->tail;
 	unsigned int bytes;
@@ -639,7 +640,10 @@ static bool netsec_clean_tx_dring(struct netsec_priv *priv)
 	spin_lock(&dring->lock);
 
 	bytes = 0;
+	xdp_frame_bulk_init(&bq);
 	entry = dring->vaddr + DESC_SZ * tail;
+
+	rcu_read_lock(); /* need for xdp_return_frame_bulk */
 
 	while (!(entry->attr & (1U << NETSEC_TX_SHIFT_OWN_FIELD)) &&
 	       cnt < DESC_NUM) {
@@ -665,7 +669,10 @@ static bool netsec_clean_tx_dring(struct netsec_priv *priv)
 			dev_kfree_skb(desc->skb);
 		} else {
 			bytes += desc->xdpf->len;
-			xdp_return_frame(desc->xdpf);
+			if (desc->buf_type == TYPE_NETSEC_XDP_TX)
+				xdp_return_frame_rx_napi(desc->xdpf);
+			else
+				xdp_return_frame_bulk(desc->xdpf, &bq);
 		}
 next:
 		/* clean up so netsec_uninit_pkt_dring() won't free the skb
@@ -684,6 +691,9 @@ next:
 		entry = dring->vaddr + DESC_SZ * tail;
 		cnt++;
 	}
+	xdp_flush_frame_bulk(&bq);
+
+	rcu_read_unlock();
 
 	spin_unlock(&dring->lock);
 
@@ -1304,7 +1314,7 @@ static int netsec_setup_rx_dring(struct netsec_priv *priv)
 		goto err_out;
 	}
 
-	err = xdp_rxq_info_reg(&dring->xdp_rxq, priv->ndev, 0);
+	err = xdp_rxq_info_reg(&dring->xdp_rxq, priv->ndev, 0, priv->napi.napi_id);
 	if (err)
 		goto err_out;
 
@@ -1708,16 +1718,13 @@ static int netsec_netdev_init(struct net_device *ndev)
 		goto err1;
 
 	/* set phy power down */
-	data = netsec_phy_read(priv->mii_bus, priv->phy_addr, MII_BMCR);
-	netsec_phy_write(priv->mii_bus, priv->phy_addr, MII_BMCR,
-			 data | BMCR_PDOWN);
+	data = netsec_phy_read(priv->mii_bus, priv->phy_addr, MII_BMCR) |
+		BMCR_PDOWN;
+	netsec_phy_write(priv->mii_bus, priv->phy_addr, MII_BMCR, data);
 
 	ret = netsec_reset_hardware(priv, true);
 	if (ret)
 		goto err2;
-
-	/* Restore phy power state */
-	netsec_phy_write(priv->mii_bus, priv->phy_addr, MII_BMCR, data);
 
 	spin_lock_init(&priv->desc_ring[NETSEC_RING_TX].lock);
 	spin_lock_init(&priv->desc_ring[NETSEC_RING_RX].lock);

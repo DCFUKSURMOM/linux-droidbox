@@ -108,8 +108,9 @@
 	BPF_EXIT_INSN(),
 	},
 	.fixup_map_hash_8b = { 3 },
-	.errstr = "invalid indirect read from stack off -8+0 size 8",
-	.result = REJECT,
+	.errstr_unpriv = "invalid indirect read from stack off -8+0 size 8",
+	.result_unpriv = REJECT,
+	.result = ACCEPT,
 },
 {
 	"unpriv: mangle pointer on stack 1",
@@ -495,24 +496,11 @@
 	.result = ACCEPT,
 },
 {
-	"unpriv: adding of fp, reg",
+	"unpriv: adding of fp",
 	.insns = {
 	BPF_MOV64_IMM(BPF_REG_0, 0),
 	BPF_MOV64_IMM(BPF_REG_1, 0),
 	BPF_ALU64_REG(BPF_ADD, BPF_REG_1, BPF_REG_10),
-	BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0, -8),
-	BPF_EXIT_INSN(),
-	},
-	.errstr_unpriv = "R1 tried to add from different maps, paths, or prohibited types",
-	.result_unpriv = REJECT,
-	.result = ACCEPT,
-},
-{
-	"unpriv: adding of fp, imm",
-	.insns = {
-	BPF_MOV64_IMM(BPF_REG_0, 0),
-	BPF_MOV64_REG(BPF_REG_1, BPF_REG_10),
-	BPF_ALU64_IMM(BPF_ADD, BPF_REG_1, 0),
 	BPF_STX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0, -8),
 	BPF_EXIT_INSN(),
 	},

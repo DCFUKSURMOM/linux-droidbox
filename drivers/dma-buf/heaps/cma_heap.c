@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 
 struct cma_heap {
@@ -199,31 +200,34 @@ static void *cma_heap_do_vmap(struct cma_heap_buffer *buffer)
 	return vaddr;
 }
 
-static void *cma_heap_vmap(struct dma_buf *dmabuf)
+static int cma_heap_vmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct cma_heap_buffer *buffer = dmabuf->priv;
 	void *vaddr;
+	int ret = 0;
 
 	mutex_lock(&buffer->lock);
 	if (buffer->vmap_cnt) {
 		buffer->vmap_cnt++;
-		vaddr = buffer->vaddr;
+		dma_buf_map_set_vaddr(map, buffer->vaddr);
 		goto out;
 	}
 
 	vaddr = cma_heap_do_vmap(buffer);
-	if (IS_ERR(vaddr))
+	if (IS_ERR(vaddr)) {
+		ret = PTR_ERR(vaddr);
 		goto out;
-
+	}
 	buffer->vaddr = vaddr;
 	buffer->vmap_cnt++;
+	dma_buf_map_set_vaddr(map, buffer->vaddr);
 out:
 	mutex_unlock(&buffer->lock);
 
-	return vaddr;
+	return ret;
 }
 
-static void cma_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
+static void cma_heap_vunmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct cma_heap_buffer *buffer = dmabuf->priv;
 
@@ -233,6 +237,7 @@ static void cma_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
 		buffer->vaddr = NULL;
 	}
 	mutex_unlock(&buffer->lock);
+	dma_buf_map_clear(map);
 }
 
 static void cma_heap_dma_buf_release(struct dma_buf *dmabuf)
@@ -243,6 +248,7 @@ static void cma_heap_dma_buf_release(struct dma_buf *dmabuf)
 	if (buffer->vmap_cnt > 0) {
 		WARN(1, "%s: buffer still mapped in the kernel\n", __func__);
 		vunmap(buffer->vaddr);
+		buffer->vaddr = NULL;
 	}
 
 	/* free page list */
@@ -265,10 +271,10 @@ static const struct dma_buf_ops cma_heap_buf_ops = {
 	.release = cma_heap_dma_buf_release,
 };
 
-static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
-					 unsigned long len,
-					 unsigned long fd_flags,
-					 unsigned long heap_flags)
+static int cma_heap_allocate(struct dma_heap *heap,
+				  unsigned long len,
+				  unsigned long fd_flags,
+				  unsigned long heap_flags)
 {
 	struct cma_heap *cma_heap = dma_heap_get_drvdata(heap);
 	struct cma_heap_buffer *buffer;
@@ -283,7 +289,7 @@ static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
 	if (!buffer)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	INIT_LIST_HEAD(&buffer->attachments);
 	mutex_init(&buffer->lock);
@@ -292,7 +298,7 @@ static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
 	if (align > CONFIG_CMA_ALIGNMENT)
 		align = CONFIG_CMA_ALIGNMENT;
 
-	cma_pages = cma_alloc(cma_heap->cma, pagecount, align, GFP_KERNEL);
+	cma_pages = cma_alloc(cma_heap->cma, pagecount, align, false);
 	if (!cma_pages)
 		goto free_buffer;
 
@@ -333,7 +339,6 @@ static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
 	buffer->pagecount = pagecount;
 
 	/* create the dmabuf */
-	exp_info.exp_name = dma_heap_get_name(heap);
 	exp_info.ops = &cma_heap_buf_ops;
 	exp_info.size = buffer->len;
 	exp_info.flags = fd_flags;
@@ -344,7 +349,14 @@ static struct dma_buf *cma_heap_allocate(struct dma_heap *heap,
 		goto free_pages;
 	}
 
-	return dmabuf;
+	ret = dma_buf_fd(dmabuf, fd_flags);
+	if (ret < 0) {
+		dma_buf_put(dmabuf);
+		/* just return, as put will call release and that will free */
+		return ret;
+	}
+
+	return ret;
 
 free_pages:
 	kfree(buffer->pages);
@@ -353,7 +365,7 @@ free_cma:
 free_buffer:
 	kfree(buffer);
 
-	return ERR_PTR(ret);
+	return ret;
 }
 
 static const struct dma_heap_ops cma_heap_ops = {

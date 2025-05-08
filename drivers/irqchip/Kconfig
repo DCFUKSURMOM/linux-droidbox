@@ -387,13 +387,6 @@ config LS_SCFG_MSI
 config PARTITION_PERCPU
 	bool
 
-config EZNPS_GIC
-	bool "NPS400 Global Interrupt Manager (GIM)"
-	depends on ARC || (COMPILE_TEST && !64BIT)
-	select IRQ_DOMAIN
-	help
-	  Support the EZchip NPS400 global interrupt controller
-
 config STM32_EXTI
 	bool
 	select IRQ_DOMAIN
@@ -416,9 +409,8 @@ config IRQ_UNIPHIER_AIDET
 	  Support for the UniPhier AIDET (ARM Interrupt Detector).
 
 config MESON_IRQ_GPIO
-       tristate "Meson GPIO Interrupt Multiplexer"
-       depends on ARCH_MESON || COMPILE_TEST
-       default ARCH_MESON
+       bool "Meson GPIO Interrupt Multiplexer"
+       depends on ARCH_MESON
        select IRQ_DOMAIN_HIERARCHY
        help
          Support Meson SoC Family GPIO Interrupt Multiplexer
@@ -432,9 +424,8 @@ config GOLDFISH_PIC
          for Goldfish based virtual platforms.
 
 config QCOM_PDC
-	tristate "QCOM PDC"
+	bool "QCOM PDC"
 	depends on ARCH_QCOM
-	depends on QCOM_SCM || !QCOM_SCM
 	select IRQ_DOMAIN_HIERARCHY
 	help
 	  Power Domain Controller driver to manage and configure wakeup
@@ -466,8 +457,7 @@ config IMX_IRQSTEER
 	  Support for the i.MX IRQSTEER interrupt multiplexer/remapper.
 
 config IMX_INTMUX
-	bool "i.MX INTMUX support" if COMPILE_TEST
-	default y if ARCH_MXC
+	def_bool y if ARCH_MXC || COMPILE_TEST
 	select IRQ_DOMAIN
 	help
 	  Support for the i.MX INTMUX interrupt multiplexer.
@@ -503,8 +493,9 @@ config TI_SCI_INTA_IRQCHIP
 	  TI System Controller, say Y here. Otherwise, say N.
 
 config TI_PRUSS_INTC
-	tristate "TI PRU-ICSS Interrupt Controller"
-	depends on ARCH_DAVINCI || SOC_AM33XX || SOC_AM43XX || SOC_DRA7XX || ARCH_KEYSTONE || ARCH_K3
+	tristate
+	depends on TI_PRUSS
+	default TI_PRUSS
 	select IRQ_DOMAIN
 	help
 	  This enables support for the PRU-ICSS Local Interrupt Controller

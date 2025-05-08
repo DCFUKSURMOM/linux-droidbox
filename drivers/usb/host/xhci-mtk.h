@@ -20,14 +20,16 @@
 #define XHCI_MTK_MAX_ESIT	64
 
 /**
- * @ss_bit_map: used to avoid start split microframes overlay
- * @fs_bus_bw: array to keep track of bandwidth already used for FS
+ * @split_bit_map: used to avoid split microframes overlay
  * @ep_list: Endpoints using this TT
+ * @usb_tt: usb TT related
+ * @tt_port: TT port number
  */
 struct mu3h_sch_tt {
-	DECLARE_BITMAP(ss_bit_map, XHCI_MTK_MAX_ESIT);
-	u32 fs_bus_bw[XHCI_MTK_MAX_ESIT];
+	DECLARE_BITMAP(split_bit_map, XHCI_MTK_MAX_ESIT);
 	struct list_head ep_list;
+	struct usb_tt *usb_tt;
+	int tt_port;
 };
 
 /**
@@ -84,8 +86,7 @@ struct mu3h_sch_ep_info {
 	struct mu3h_sch_tt *sch_tt;
 	u32 ep_type;
 	u32 maxpkt;
-	struct usb_host_endpoint *ep;
-	enum usb_device_speed speed;
+	void *ep;
 	bool allocated;
 	/*
 	 * mtk xHCI scheduling information put into reserved DWs
@@ -149,7 +150,6 @@ struct xhci_hcd_mtk {
 	struct phy **phys;
 	int num_phys;
 	bool lpm_support;
-	bool u2_lpm_disable;
 	/* usb remote wakeup */
 	bool uwk_en;
 	struct regmap *uwk;
@@ -162,13 +162,38 @@ static inline struct xhci_hcd_mtk *hcd_to_mtk(struct usb_hcd *hcd)
 	return dev_get_drvdata(hcd->self.controller);
 }
 
+#if IS_ENABLED(CONFIG_USB_XHCI_MTK)
 int xhci_mtk_sch_init(struct xhci_hcd_mtk *mtk);
 void xhci_mtk_sch_exit(struct xhci_hcd_mtk *mtk);
-int xhci_mtk_add_ep(struct usb_hcd *hcd, struct usb_device *udev,
-		    struct usb_host_endpoint *ep);
-int xhci_mtk_drop_ep(struct usb_hcd *hcd, struct usb_device *udev,
-		     struct usb_host_endpoint *ep);
+int xhci_mtk_add_ep_quirk(struct usb_hcd *hcd, struct usb_device *udev,
+		struct usb_host_endpoint *ep);
+void xhci_mtk_drop_ep_quirk(struct usb_hcd *hcd, struct usb_device *udev,
+		struct usb_host_endpoint *ep);
 int xhci_mtk_check_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
 void xhci_mtk_reset_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
+
+#else
+static inline int xhci_mtk_add_ep_quirk(struct usb_hcd *hcd,
+	struct usb_device *udev, struct usb_host_endpoint *ep)
+{
+	return 0;
+}
+
+static inline void xhci_mtk_drop_ep_quirk(struct usb_hcd *hcd,
+	struct usb_device *udev, struct usb_host_endpoint *ep)
+{
+}
+
+static inline int xhci_mtk_check_bandwidth(struct usb_hcd *hcd,
+		struct usb_device *udev)
+{
+	return 0;
+}
+
+static inline void xhci_mtk_reset_bandwidth(struct usb_hcd *hcd,
+		struct usb_device *udev)
+{
+}
+#endif
 
 #endif		/* _XHCI_MTK_H_ */

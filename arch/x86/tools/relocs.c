@@ -48,7 +48,6 @@ static const char * const sym_regex_kernel[S_NSYMTYPES] = {
 	"^(xen_irq_disable_direct_reloc$|"
 	"xen_save_fl_direct_reloc$|"
 	"VDSO|"
-	"__typeid__|"
 	"__crc_)",
 
 /*
@@ -811,12 +810,6 @@ static int do_reloc64(struct section *sec, Elf_Rel *rel, ElfW(Sym) *sym,
 			    symname);
 		break;
 
-	case R_X86_64_8:
-		if (!shn_abs || !is_reloc(S_ABS, symname))
-			die("Non-whitelisted %s relocation: %s\n",
-				rel_type(r_type), symname);
-		break;
-
 	case R_X86_64_32:
 	case R_X86_64_32S:
 	case R_X86_64_64:
@@ -876,11 +869,9 @@ static int do_reloc32(struct section *sec, Elf_Rel *rel, Elf_Sym *sym,
 	case R_386_PC32:
 	case R_386_PC16:
 	case R_386_PC8:
-	case R_386_PLT32:
 		/*
-		 * NONE can be ignored and PC relative relocations don't need
-		 * to be adjusted. Because sym must be defined, R_386_PLT32 can
-		 * be treated the same way as R_386_PC32.
+		 * NONE can be ignored and PC relative relocations don't
+		 * need to be adjusted.
 		 */
 		break;
 
@@ -921,11 +912,9 @@ static int do_reloc_real(struct section *sec, Elf_Rel *rel, Elf_Sym *sym,
 	case R_386_PC32:
 	case R_386_PC16:
 	case R_386_PC8:
-	case R_386_PLT32:
 		/*
-		 * NONE can be ignored and PC relative relocations don't need
-		 * to be adjusted. Because sym must be defined, R_386_PLT32 can
-		 * be treated the same way as R_386_PC32.
+		 * NONE can be ignored and PC relative relocations don't
+		 * need to be adjusted.
 		 */
 		break;
 

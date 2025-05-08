@@ -963,11 +963,8 @@ void rpc_execute(struct rpc_task *task)
 
 	rpc_set_active(task);
 	rpc_make_runnable(rpciod_workqueue, task);
-	if (!is_async) {
-		unsigned int pflags = memalloc_nofs_save();
+	if (!is_async)
 		__rpc_execute(task);
-		memalloc_nofs_restore(pflags);
-	}
 }
 
 static void rpc_async_schedule(struct work_struct *work)

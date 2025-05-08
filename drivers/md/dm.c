@@ -28,7 +28,6 @@
 #include <linux/refcount.h>
 #include <linux/part_stat.h>
 #include <linux/blk-crypto.h>
-#include <linux/keyslot-manager.h>
 
 #define DM_MSG_PREFIX "core"
 
@@ -148,16 +147,6 @@ EXPORT_SYMBOL_GPL(dm_bio_get_target_bio_nr);
 
 #define DM_NUMA_NODE NUMA_NO_NODE
 static int dm_numa_node = DM_NUMA_NODE;
-
-#define DEFAULT_SWAP_BIOS	(8 * 1048576 / PAGE_SIZE)
-static int swap_bios = DEFAULT_SWAP_BIOS;
-static int get_swap_bios(void)
-{
-	int latch = READ_ONCE(swap_bios);
-	if (unlikely(latch <= 0))
-		latch = DEFAULT_SWAP_BIOS;
-	return latch;
-}
 
 /*
  * For mempools pre-allocation at the table loading time.
@@ -581,7 +570,10 @@ static int dm_blk_ioctl(struct block_device *bdev, fmode_t mode,
 		}
 	}
 
-	r =  __blkdev_driver_ioctl(bdev, mode, cmd, arg);
+	if (!bdev->bd_disk->fops->ioctl)
+		r = -ENOTTY;
+	else
+		r = bdev->bd_disk->fops->ioctl(bdev, mode, cmd, arg);
 out:
 	dm_unprepare_ioctl(md, srcu_idx);
 	return r;
@@ -977,11 +969,6 @@ void disable_write_zeroes(struct mapped_device *md)
 	limits->max_write_zeroes_sectors = 0;
 }
 
-static bool swap_bios_limit(struct dm_target *ti, struct bio *bio)
-{
-	return unlikely((bio->bi_opf & REQ_SWAP) != 0) && unlikely(ti->limit_swap_bios);
-}
-
 static void clone_endio(struct bio *bio)
 {
 	blk_status_t error = bio->bi_status;
@@ -1030,11 +1017,6 @@ static void clone_endio(struct bio *bio)
 			DMWARN("unimplemented target endio return value: %d", r);
 			BUG();
 		}
-	}
-
-	if (unlikely(swap_bios_limit(tio->ti, bio))) {
-		struct mapped_device *md = io->md;
-		up(&md->swap_bios_semaphore);
 	}
 
 	free_tio(tio);
@@ -1146,7 +1128,7 @@ static bool dm_dax_supported(struct dax_device *dax_dev, struct block_device *bd
 	if (!map)
 		goto out;
 
-	ret = dm_table_supports_dax(map, device_not_dax_capable, &blocksize);
+	ret = dm_table_supports_dax(map, device_supports_dax, &blocksize);
 
 out:
 	dm_put_live_table(md, srcu_idx);
@@ -1270,22 +1252,6 @@ void dm_accept_partial_bio(struct bio *bio, unsigned n_sectors)
 }
 EXPORT_SYMBOL_GPL(dm_accept_partial_bio);
 
-static noinline void __set_swap_bios_limit(struct mapped_device *md, int latch)
-{
-	mutex_lock(&md->swap_bios_lock);
-	while (latch < md->swap_bios) {
-		cond_resched();
-		down(&md->swap_bios_semaphore);
-		md->swap_bios--;
-	}
-	while (latch > md->swap_bios) {
-		cond_resched();
-		up(&md->swap_bios_semaphore);
-		md->swap_bios++;
-	}
-	mutex_unlock(&md->swap_bios_lock);
-}
-
 static blk_qc_t __map_bio(struct dm_target_io *tio)
 {
 	int r;
@@ -1305,37 +1271,20 @@ static blk_qc_t __map_bio(struct dm_target_io *tio)
 	atomic_inc(&io->io_count);
 	sector = clone->bi_iter.bi_sector;
 
-	if (unlikely(swap_bios_limit(ti, clone))) {
-		struct mapped_device *md = io->md;
-		int latch = get_swap_bios();
-		if (unlikely(latch != md->swap_bios))
-			__set_swap_bios_limit(md, latch);
-		down(&md->swap_bios_semaphore);
-	}
-
 	r = ti->type->map(ti, clone);
 	switch (r) {
 	case DM_MAPIO_SUBMITTED:
 		break;
 	case DM_MAPIO_REMAPPED:
 		/* the bio has been remapped so dispatch it */
-		trace_block_bio_remap(clone->bi_disk->queue, clone,
-				      bio_dev(io->orig_bio), sector);
+		trace_block_bio_remap(clone, bio_dev(io->orig_bio), sector);
 		ret = submit_bio_noacct(clone);
 		break;
 	case DM_MAPIO_KILL:
-		if (unlikely(swap_bios_limit(ti, clone))) {
-			struct mapped_device *md = io->md;
-			up(&md->swap_bios_semaphore);
-		}
 		free_tio(tio);
 		dec_pending(io, BLK_STS_IOERR);
 		break;
 	case DM_MAPIO_REQUEUE:
-		if (unlikely(swap_bios_limit(ti, clone))) {
-			struct mapped_device *md = io->md;
-			up(&md->swap_bios_semaphore);
-		}
 		free_tio(tio);
 		dec_pending(io, BLK_STS_DM_REQUEUE);
 		break;
@@ -1473,17 +1422,11 @@ static int __send_empty_flush(struct clone_info *ci)
 	 */
 	bio_init(&flush_bio, NULL, 0);
 	flush_bio.bi_opf = REQ_OP_WRITE | REQ_PREFLUSH | REQ_SYNC;
+	flush_bio.bi_disk = ci->io->md->disk;
+	bio_associate_blkg(&flush_bio);
+
 	ci->bio = &flush_bio;
 	ci->sector_count = 0;
-
-	/*
-	 * Empty flush uses a statically initialized bio, as the base for
-	 * cloning.  However, blkg association requires that a bdev is
-	 * associated with a gendisk, which doesn't happen until the bdev is
-	 * opened.  So, blkg association is done at issue time of the flush
-	 * rather than when the device is created in alloc_dev().
-	 */
-	bio_set_dev(ci->bio, ci->io->md->bdev);
 
 	BUG_ON(bio_has_data(ci->bio));
 	while ((ti = dm_table_get_target(ci->map, target_nr++)))
@@ -1643,7 +1586,7 @@ static blk_qc_t __split_and_process_bio(struct mapped_device *md,
 		ci.sector_count = bio_sectors(bio);
 		while (ci.sector_count && !error) {
 			error = __split_and_process_non_flush(&ci);
-			if (current->bio_list && ci.sector_count && !error) {
+			if (ci.sector_count && !error) {
 				/*
 				 * Remainder must be passed to submit_bio_noacct()
 				 * so that it gets handled *after* bios already submitted
@@ -1664,12 +1607,12 @@ static blk_qc_t __split_and_process_bio(struct mapped_device *md,
 				 * (by eliminating DM's splitting and just using bio_split)
 				 */
 				part_stat_lock();
-				__dm_part_stat_sub(&dm_disk(md)->part0,
+				__dm_part_stat_sub(dm_disk(md)->part0,
 						   sectors[op_stat_group(bio_op(bio))], ci.sector_count);
 				part_stat_unlock();
 
 				bio_chain(b, bio);
-				trace_block_split(md->queue, b, bio->bi_iter.bi_sector);
+				trace_block_split(b, bio->bi_iter.bi_sector);
 				ret = submit_bio_noacct(bio);
 				break;
 			}
@@ -1775,19 +1718,6 @@ static const struct dax_operations dm_dax_ops;
 
 static void dm_wq_work(struct work_struct *work);
 
-#ifdef CONFIG_BLK_INLINE_ENCRYPTION
-static void dm_queue_destroy_keyslot_manager(struct request_queue *q)
-{
-	dm_destroy_keyslot_manager(q->ksm);
-}
-
-#else /* CONFIG_BLK_INLINE_ENCRYPTION */
-
-static inline void dm_queue_destroy_keyslot_manager(struct request_queue *q)
-{
-}
-#endif /* !CONFIG_BLK_INLINE_ENCRYPTION */
-
 static void cleanup_mapped_device(struct mapped_device *md)
 {
 	if (md->wq)
@@ -1809,22 +1739,14 @@ static void cleanup_mapped_device(struct mapped_device *md)
 		put_disk(md->disk);
 	}
 
-	if (md->queue) {
-		dm_queue_destroy_keyslot_manager(md->queue);
+	if (md->queue)
 		blk_cleanup_queue(md->queue);
-	}
 
 	cleanup_srcu_struct(&md->io_barrier);
-
-	if (md->bdev) {
-		bdput(md->bdev);
-		md->bdev = NULL;
-	}
 
 	mutex_destroy(&md->suspend_lock);
 	mutex_destroy(&md->type_lock);
 	mutex_destroy(&md->table_devices_lock);
-	mutex_destroy(&md->swap_bios_lock);
 
 	dm_mq_cleanup_mapped_device(md);
 }
@@ -1892,10 +1814,6 @@ static struct mapped_device *alloc_dev(int minor)
 	init_waitqueue_head(&md->eventq);
 	init_completion(&md->kobj_holder.completion);
 
-	md->swap_bios = get_swap_bios();
-	sema_init(&md->swap_bios_semaphore, md->swap_bios);
-	mutex_init(&md->swap_bios_lock);
-
 	md->disk->major = _major;
 	md->disk->first_minor = minor;
 	md->disk->fops = &dm_blk_dops;
@@ -1915,10 +1833,6 @@ static struct mapped_device *alloc_dev(int minor)
 
 	md->wq = alloc_workqueue("kdmflush", WQ_MEM_RECLAIM, 0);
 	if (!md->wq)
-		goto bad;
-
-	md->bdev = bdget_disk(md->disk, 0);
-	if (!md->bdev)
 		goto bad;
 
 	dm_stats_init(&md->stats);
@@ -2045,8 +1959,7 @@ static struct dm_table *__bind(struct mapped_device *md, struct dm_table *t,
 	if (size != dm_get_size(md))
 		memset(&md->geometry, 0, sizeof(md->geometry));
 
-	set_capacity(md->disk, size);
-	bd_set_nr_sectors(md->bdev, size);
+	set_capacity_and_notify(md->disk, size);
 
 	dm_table_event_callback(t, event_callback, md);
 
@@ -2329,7 +2242,7 @@ EXPORT_SYMBOL_GPL(dm_put);
 static bool md_in_flight_bios(struct mapped_device *md)
 {
 	int cpu;
-	struct hd_struct *part = &dm_disk(md)->part0;
+	struct block_device *part = dm_disk(md)->part0;
 	long sum = 0;
 
 	for_each_possible_cpu(cpu) {
@@ -2466,7 +2379,7 @@ static int lock_fs(struct mapped_device *md)
 
 	WARN_ON(test_bit(DMF_FROZEN, &md->flags));
 
-	r = freeze_bdev(md->bdev);
+	r = freeze_bdev(md->disk->part0);
 	if (!r)
 		set_bit(DMF_FROZEN, &md->flags);
 	return r;
@@ -2476,7 +2389,7 @@ static void unlock_fs(struct mapped_device *md)
 {
 	if (!test_bit(DMF_FROZEN, &md->flags))
 		return;
-	thaw_bdev(md->bdev);
+	thaw_bdev(md->disk->part0);
 	clear_bit(DMF_FROZEN, &md->flags);
 }
 
@@ -3183,9 +3096,6 @@ MODULE_PARM_DESC(reserved_bio_based_ios, "Reserved IOs in bio-based mempools");
 
 module_param(dm_numa_node, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(dm_numa_node, "NUMA node for DM device memory allocations");
-
-module_param(swap_bios, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(swap_bios, "Maximum allowed inflight swap IOs");
 
 MODULE_DESCRIPTION(DM_NAME " driver");
 MODULE_AUTHOR("Joe Thornber <dm-devel@redhat.com>");

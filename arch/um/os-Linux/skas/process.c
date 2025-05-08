@@ -249,7 +249,6 @@ static int userspace_tramp(void *stack)
 }
 
 int userspace_pid[NR_CPUS];
-int kill_userspace_mm[NR_CPUS];
 
 /**
  * start_userspace() - prepare a new userspace process
@@ -343,8 +342,6 @@ void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs)
 	interrupt_end();
 
 	while (1) {
-		if (kill_userspace_mm[0])
-			fatal_sigsegv();
 
 		/*
 		 * This can legitimately fail if the process loads a
@@ -403,7 +400,20 @@ void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs)
 		if (WIFSTOPPED(status)) {
 			int sig = WSTOPSIG(status);
 
-			ptrace(PTRACE_GETSIGINFO, pid, 0, (struct siginfo *)&si);
+			/* These signal handlers need the si argument.
+			 * The SIGIO and SIGALARM handlers which constitute the
+			 * majority of invocations, do not use it.
+			 */
+			switch (sig) {
+			case SIGSEGV:
+			case SIGTRAP:
+			case SIGILL:
+			case SIGBUS:
+			case SIGFPE:
+			case SIGWINCH:
+				ptrace(PTRACE_GETSIGINFO, pid, 0, (struct siginfo *)&si);
+				break;
+			}
 
 			switch (sig) {
 			case SIGSEGV:
@@ -653,5 +663,4 @@ void reboot_skas(void)
 void __switch_mm(struct mm_id *mm_idp)
 {
 	userspace_pid[0] = mm_idp->u.pid;
-	kill_userspace_mm[0] = mm_idp->kill;
 }

@@ -209,11 +209,6 @@ EXPORT_SYMBOL(boot_cpu_data);
 
 unsigned int def_to_bigsmp;
 
-/* For MCA, but anyone else can use it if they want */
-unsigned int machine_id;
-unsigned int machine_submodel_id;
-unsigned int BIOS_revision;
-
 struct apm_info apm_info;
 EXPORT_SYMBOL(apm_info);
 
@@ -1150,11 +1145,14 @@ void __init setup_arch(char **cmdline_p)
 
 	cleanup_highmap();
 
-	/* Look for ACPI tables and reserve memory occupied by them. */
-	acpi_boot_table_init();
-
 	memblock_set_current_limit(ISA_END_ADDRESS);
 	e820__memblock_setup();
+
+	/*
+	 * Needs to run after memblock setup because it needs the physical
+	 * memory size.
+	 */
+	sev_setup_arch();
 
 	reserve_bios_regions();
 
@@ -1237,6 +1235,11 @@ void __init setup_arch(char **cmdline_p)
 	io_delay_init();
 
 	early_platform_quirks();
+
+	/*
+	 * Parse the ACPI tables for possible boot-time SMP configuration.
+	 */
+	acpi_boot_table_init();
 
 	early_acpi_boot_init();
 

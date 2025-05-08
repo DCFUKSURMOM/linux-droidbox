@@ -44,8 +44,6 @@
 #include <linux/percpu.h>
 #include <linux/thread_info.h>
 #include <linux/prctl.h>
-#include <trace/hooks/fpsimd.h>
-#include <trace/hooks/mpam.h>
 
 #include <asm/alternative.h>
 #include <asm/arch_gicv3.h>
@@ -71,6 +69,8 @@ EXPORT_SYMBOL(__stack_chk_guard);
  */
 void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
+
+void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
 
 static void noinstr __cpu_do_idle(void)
 {
@@ -199,7 +199,10 @@ void machine_restart(char *cmd)
 		efi_reboot(reboot_mode, NULL);
 
 	/* Now call the architecture specific reboot code. */
-	do_kernel_restart(cmd);
+	if (arm_pm_restart)
+		arm_pm_restart(reboot_mode, cmd);
+	else
+		do_kernel_restart(cmd);
 
 	/*
 	 * Whoops - the architecture was unable to reboot.
@@ -306,7 +309,6 @@ void show_regs(struct pt_regs * regs)
 	__show_regs(regs);
 	dump_backtrace(regs, NULL, KERN_DEFAULT);
 }
-EXPORT_SYMBOL_GPL(show_regs);
 
 static void tls_thread_flush(void)
 {
@@ -458,17 +460,6 @@ static void tls_thread_switch(struct task_struct *next)
 	write_sysreg(*task_user_tls(next), tpidr_el0);
 }
 
-/* Restore the UAO state depending on next's addr_limit */
-void uao_thread_switch(struct task_struct *next)
-{
-	if (IS_ENABLED(CONFIG_ARM64_UAO)) {
-		if (task_thread_info(next)->addr_limit == KERNEL_DS)
-			asm(ALTERNATIVE("nop", SET_PSTATE_UAO(1), ARM64_HAS_UAO));
-		else
-			asm(ALTERNATIVE("nop", SET_PSTATE_UAO(0), ARM64_HAS_UAO));
-	}
-}
-
 /*
  * Force SSBS state on context-switch, since it may be lost after migrating
  * from a CPU which treats the bit as RES0 in a heterogeneous system.
@@ -551,14 +542,8 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	hw_breakpoint_thread_switch(next);
 	contextidr_thread_switch(next);
 	entry_task_switch(next);
-	uao_thread_switch(next);
 	ssbs_thread_switch(next);
 	erratum_1418040_thread_switch(prev, next);
-	/*
-	 *  vendor hook is needed before the dsb(),
-	 *  because MPAM is related to cache maintenance.
-	 */
-	trace_android_vh_mpam_set(prev, next);
 
 	/*
 	 * Complete any pending TLB or cache maintenance on this CPU in case
@@ -574,8 +559,6 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	 * registers.
 	 */
 	mte_thread_switch(next);
-
-	trace_android_vh_is_fpsimd_save(prev, next);
 
 	/* the actual thread switch */
 	last = cpu_switch_to(prev, next);
@@ -623,25 +606,8 @@ unsigned long arch_align_stack(unsigned long sp)
  */
 void arch_setup_new_exec(void)
 {
-	unsigned long mmflags = 0;
+	current->mm->context.flags = is_compat_task() ? MMCF_AARCH32 : 0;
 
-	if (is_compat_task()) {
-		mmflags = MMCF_AARCH32;
-
-		/*
-		 * Restrict the CPU affinity mask for a 32-bit task so that
-		 * it contains only 32-bit-capable CPUs.
-		 *
-		 * From the perspective of the task, this looks similar to
-		 * what would happen if the 64-bit-only CPUs were hot-unplugged
-		 * at the point of execve(), although we try a bit harder to
-		 * honour the cpuset hierarchy.
-		 */
-		if (static_branch_unlikely(&arm64_mismatched_32bit_el0))
-			force_compatible_cpus_allowed_ptr(current);
-	}
-
-	current->mm->context.flags = mmflags;
 	ptrauth_thread_init_user(current);
 
 	if (task_spec_ssb_noexec(current)) {

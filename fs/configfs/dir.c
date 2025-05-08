@@ -267,6 +267,7 @@ static void configfs_remove_dirent(struct dentry *dentry)
  *	configfs_create_dir - create a directory for an config_item.
  *	@item:		config_itemwe're creating directory for.
  *	@dentry:	config_item's dentry.
+ *	@frag:		config_item's fragment.
  *
  *	Note: user-created entries won't be allowed under this new directory
  *	until it is validated by configfs_dir_set_ready()
@@ -1408,21 +1409,6 @@ static int configfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 		ret = configfs_attach_group(parent_item, item, dentry, frag);
 	else
 		ret = configfs_attach_item(parent_item, item, dentry, frag);
-
-	/* inherit uid/gid from process creating the directory */
-	if (!uid_eq(current_fsuid(), GLOBAL_ROOT_UID) ||
-	    !gid_eq(current_fsgid(), GLOBAL_ROOT_GID)) {
-		struct iattr ia = {
-			.ia_uid = current_fsuid(),
-			.ia_gid = current_fsgid(),
-			.ia_valid = ATTR_UID | ATTR_GID,
-		};
-		struct inode *inode = d_inode(dentry);
-		inode->i_uid = ia.ia_uid;
-		inode->i_gid = ia.ia_gid;
-		/* the above manual assignments skip the permission checks */
-		configfs_setattr(dentry, &ia);
-	}
 
 	spin_lock(&configfs_dirent_lock);
 	sd->s_type &= ~CONFIGFS_USET_IN_MKDIR;

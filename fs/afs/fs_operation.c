@@ -181,13 +181,10 @@ void afs_wait_for_operation(struct afs_operation *op)
 		if (test_bit(AFS_SERVER_FL_IS_YFS, &op->server->flags) &&
 		    op->ops->issue_yfs_rpc)
 			op->ops->issue_yfs_rpc(op);
-		else if (op->ops->issue_afs_rpc)
-			op->ops->issue_afs_rpc(op);
 		else
-			op->ac.error = -ENOTSUPP;
+			op->ops->issue_afs_rpc(op);
 
-		if (op->call)
-			op->error = afs_wait_for_call_to_complete(op->call, &op->ac);
+		op->error = afs_wait_for_call_to_complete(op->call, &op->ac);
 	}
 
 	switch (op->error) {

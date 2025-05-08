@@ -21,6 +21,50 @@
 #include "rpmsg_internal.h"
 
 /**
+ * rpmsg_create_channel() - create a new rpmsg channel
+ * using its name and address info.
+ * @rpdev: rpmsg device
+ * @chinfo: channel_info to bind
+ *
+ * Returns a pointer to the new rpmsg device on success, or NULL on error.
+ */
+struct rpmsg_device *rpmsg_create_channel(struct rpmsg_device *rpdev,
+					  struct rpmsg_channel_info *chinfo)
+{
+	if (WARN_ON(!rpdev))
+		return NULL;
+	if (!rpdev->ops || !rpdev->ops->create_channel) {
+		dev_err(&rpdev->dev, "no create_channel ops found\n");
+		return NULL;
+	}
+
+	return rpdev->ops->create_channel(rpdev, chinfo);
+}
+EXPORT_SYMBOL(rpmsg_create_channel);
+
+/**
+ * rpmsg_release_channel() - release a rpmsg channel
+ * using its name and address info.
+ * @rpdev: rpmsg device
+ * @chinfo: channel_info to bind
+ *
+ * Returns 0 on success or an appropriate error value.
+ */
+int rpmsg_release_channel(struct rpmsg_device *rpdev,
+			  struct rpmsg_channel_info *chinfo)
+{
+	if (WARN_ON(!rpdev))
+		return -EINVAL;
+	if (!rpdev->ops || !rpdev->ops->release_channel) {
+		dev_err(&rpdev->dev, "no release_channel ops found\n");
+		return -ENXIO;
+	}
+
+	return rpdev->ops->release_channel(rpdev, chinfo);
+}
+EXPORT_SYMBOL(rpmsg_release_channel);
+
+/**
  * rpmsg_create_ept() - create a new rpmsg_endpoint
  * @rpdev: rpmsg channel device
  * @cb: rx callback handler
@@ -283,42 +327,6 @@ int rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src, u32 dst,
 }
 EXPORT_SYMBOL(rpmsg_trysend_offchannel);
 
-/**
- * rpmsg_get_signals() - get the signals for this endpoint
- * @ept:	the rpmsg endpoint
- *
- * Returns signal bits on success and an appropriate error value on failure.
- */
-int rpmsg_get_signals(struct rpmsg_endpoint *ept)
-{
-	if (WARN_ON(!ept))
-		return -EINVAL;
-	if (!ept->ops->get_signals)
-		return -ENXIO;
-
-	return ept->ops->get_signals(ept);
-}
-EXPORT_SYMBOL(rpmsg_get_signals);
-
-/**
- * rpmsg_set_signals() - set the remote signals for this endpoint
- * @ept:	the rpmsg endpoint
- * @set:	set mask for signals
- * @clear:	clear mask for signals
- *
- * Returns 0 on success and an appropriate error value on failure.
- */
-int rpmsg_set_signals(struct rpmsg_endpoint *ept, u32 set, u32 clear)
-{
-	if (WARN_ON(!ept))
-		return -EINVAL;
-	if (!ept->ops->set_signals)
-		return -ENXIO;
-
-	return ept->ops->set_signals(ept, set, clear);
-}
-EXPORT_SYMBOL(rpmsg_set_signals);
-
 /*
  * match a rpmsg channel with a channel info struct.
  * this is used to make sure we're not creating rpmsg devices for channels
@@ -504,10 +512,6 @@ static int rpmsg_dev_probe(struct device *dev)
 
 		rpdev->ept = ept;
 		rpdev->src = ept->addr;
-
-		if (rpdrv->signals)
-			ept->sig_cb = rpdrv->signals;
-
 	}
 
 	err = rpdrv->probe(rpdev);

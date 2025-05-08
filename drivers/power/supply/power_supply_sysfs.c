@@ -89,7 +89,6 @@ static const char * const POWER_SUPPLY_CHARGE_TYPE_TEXT[] = {
 	[POWER_SUPPLY_CHARGE_TYPE_ADAPTIVE]	= "Adaptive",
 	[POWER_SUPPLY_CHARGE_TYPE_CUSTOM]	= "Custom",
 	[POWER_SUPPLY_CHARGE_TYPE_LONGLIFE]	= "Long Life",
-	[POWER_SUPPLY_CHARGE_TYPE_TAPER]	= "Taper",
 };
 
 static const char * const POWER_SUPPLY_HEALTH_TEXT[] = {
@@ -403,7 +402,7 @@ void power_supply_init_attrs(struct device_type *dev_type)
 		struct device_attribute *attr;
 
 		if (!power_supply_attrs[i].prop_name) {
-			pr_warn("%s: Property %d skipped because is is missing from power_supply_attrs\n",
+			pr_warn("%s: Property %d skipped because it is missing from power_supply_attrs\n",
 				__func__, i);
 			sprintf(power_supply_attrs[i].attr_name, "_err_%d", i);
 		} else {

@@ -36,11 +36,11 @@ static inline void contextidr_thread_switch(struct task_struct *next)
 }
 
 /*
- * Set TTBR0 to empty_zero_page. No translations will be possible via TTBR0.
+ * Set TTBR0 to reserved_pg_dir. No translations will be possible via TTBR0.
  */
 static inline void cpu_set_reserved_ttbr0(void)
 {
-	unsigned long ttbr = phys_to_ttbr(__pa_symbol(empty_zero_page));
+	unsigned long ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
 
 	write_sysreg(ttbr, ttbr0_el1);
 	isb();
@@ -65,7 +65,10 @@ extern u64 idmap_ptrs_per_pgd;
 
 static inline bool __cpu_uses_extended_idmap(void)
 {
-	return unlikely(idmap_t0sz != TCR_T0SZ(vabits_actual));
+	if (IS_ENABLED(CONFIG_ARM64_VA_BITS_52))
+		return false;
+
+	return unlikely(idmap_t0sz != TCR_T0SZ(VA_BITS));
 }
 
 /*
@@ -134,7 +137,7 @@ static inline void cpu_install_idmap(void)
  * Atomically replaces the active TTBR1_EL1 PGD with a new VA-compatible PGD,
  * avoiding the possibility of conflicting TLB entries being allocated.
  */
-static inline void __nocfi cpu_replace_ttbr1(pgd_t *pgdp)
+static inline void cpu_replace_ttbr1(pgd_t *pgdp)
 {
 	typedef void (ttbr_replace_func)(phys_addr_t);
 	extern ttbr_replace_func idmap_cpu_replace_ttbr1;
@@ -155,7 +158,7 @@ static inline void __nocfi cpu_replace_ttbr1(pgd_t *pgdp)
 		ttbr1 |= TTBR_CNP_BIT;
 	}
 
-	replace_phys = (void *)__pa_function(idmap_cpu_replace_ttbr1);
+	replace_phys = (void *)__pa_symbol(idmap_cpu_replace_ttbr1);
 
 	cpu_install_idmap();
 	replace_phys(ttbr1);
@@ -171,9 +174,9 @@ static inline void __nocfi cpu_replace_ttbr1(pgd_t *pgdp)
  * Setting a reserved TTBR0 or EPD0 would work, but it all gets ugly when you
  * take CPU migration into account.
  */
-#define destroy_context(mm)		do { } while(0)
 void check_and_switch_context(struct mm_struct *mm);
 
+#define init_new_context(tsk, mm) init_new_context(tsk, mm)
 static inline int
 init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 {
@@ -192,7 +195,7 @@ static inline void update_saved_ttbr0(struct task_struct *tsk,
 		return;
 
 	if (mm == &init_mm)
-		ttbr = __pa_symbol(empty_zero_page);
+		ttbr = __pa_symbol(reserved_pg_dir);
 	else
 		ttbr = virt_to_phys(mm->pgd) | ASID(mm) << 48;
 
@@ -205,6 +208,7 @@ static inline void update_saved_ttbr0(struct task_struct *tsk,
 }
 #endif
 
+#define enter_lazy_tlb enter_lazy_tlb
 static inline void
 enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 {
@@ -245,27 +249,13 @@ switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	update_saved_ttbr0(tsk, next);
 }
 
-#define deactivate_mm(tsk,mm)	do { } while (0)
-#define activate_mm(prev,next)	switch_mm(prev, next, current)
-
-static inline const struct cpumask *
-task_cpu_possible_mask(struct task_struct *p)
-{
-	if (!static_branch_unlikely(&arm64_mismatched_32bit_el0))
-		return cpu_possible_mask;
-
-	if (!is_compat_thread(task_thread_info(p)))
-		return cpu_possible_mask;
-
-	return system_32bit_el0_cpumask();
-}
-#define task_cpu_possible_mask	task_cpu_possible_mask
-
 void verify_cpu_asid_bits(void);
 void post_ttbr_update_workaround(void);
 
 unsigned long arm64_mm_context_get(struct mm_struct *mm);
 void arm64_mm_context_put(struct mm_struct *mm);
+
+#include <asm-generic/mmu_context.h>
 
 #endif /* !__ASSEMBLY__ */
 

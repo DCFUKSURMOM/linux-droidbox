@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <errno.h>
 #include "modpost.h"
 #include "../../include/linux/license.h"
@@ -29,8 +30,6 @@ static int have_vmlinux = 0;
 static int all_versions = 0;
 /* If we are modposting external module set to 1 */
 static int external_module = 0;
-#define MODULE_SCMVERSION_SIZE 64
-static char module_scmversion[MODULE_SCMVERSION_SIZE];
 /* Only warn about unresolved symbols */
 static int warn_unresolved = 0;
 /* How a symbol is exported */
@@ -83,6 +82,14 @@ modpost_log(enum loglevel loglevel, const char *fmt, ...)
 		exit(1);
 	if (loglevel == LOG_ERROR)
 		error_occurred = true;
+}
+
+static inline bool strends(const char *str, const char *postfix)
+{
+	if (strlen(str) < strlen(postfix))
+		return false;
+
+	return strcmp(str + strlen(str) - strlen(postfix), postfix) == 0;
 }
 
 void *do_nofail(void *ptr, const char *expr)
@@ -423,9 +430,10 @@ static struct symbol *sym_add_exported(const char *name, struct module *mod,
 		s = new_symbol(name, mod, export);
 	} else if (!external_module || s->module->is_vmlinux ||
 		   s->module == mod) {
-		fatal("%s: '%s' exported twice. Previous export was in %s%s\n",
-		      mod->name, name, s->module->name,
-		      s->module->is_vmlinux ? "" : ".ko");
+		warn("%s: '%s' exported twice. Previous export was in %s%s\n",
+		     mod->name, name, s->module->name,
+		     s->module->is_vmlinux ? "" : ".ko");
+		return s;
 	}
 
 	s->module = mod;
@@ -1980,10 +1988,6 @@ static char *remove_dot(char *s)
 		size_t m = strspn(s + n + 1, "0123456789");
 		if (m && (s[n + m] == '.' || s[n + m] == 0))
 			s[n] = 0;
-
-		/* strip trailing .lto */
-		if (strends(s, ".lto"))
-			s[strlen(s) - 4] = '\0';
 	}
 	return s;
 }
@@ -2007,9 +2011,6 @@ static void read_symbols(const char *modname)
 		/* strip trailing .o */
 		tmp = NOFAIL(strdup(modname));
 		tmp[strlen(tmp) - 2] = '\0';
-		/* strip trailing .lto */
-		if (strends(tmp, ".lto"))
-			tmp[strlen(tmp) - 4] = '\0';
 		mod = new_module(tmp);
 		free(tmp);
 	}
@@ -2261,20 +2262,6 @@ static void add_intree_flag(struct buffer *b, int is_intree)
 {
 	if (is_intree)
 		buf_printf(b, "\nMODULE_INFO(intree, \"Y\");\n");
-}
-
-/**
- * add_scmversion() - Adds the MODULE_INFO macro for the scmversion.
- * @b: Buffer to append to.
- *
- * This function fills in the module attribute `scmversion` for the kernel
- * module. This is useful for determining a given module's SCM version on
- * device via /sys/modules/<module>/scmversion and/or using the modinfo tool.
- */
-static void add_scmversion(struct buffer *b)
-{
-	if (module_scmversion[0] != '\0')
-		buf_printf(b, "\nMODULE_INFO(scmversion, \"%s\");\n", module_scmversion);
 }
 
 /* Cannot check for assembler */
@@ -2559,7 +2546,7 @@ int main(int argc, char **argv)
 	struct dump_list *dump_read_start = NULL;
 	struct dump_list **dump_read_iter = &dump_read_start;
 
-	while ((opt = getopt(argc, argv, "ei:mnT:o:awENd:v:")) != -1) {
+	while ((opt = getopt(argc, argv, "ei:mnT:o:awENd:")) != -1) {
 		switch (opt) {
 		case 'e':
 			external_module = 1;
@@ -2596,9 +2583,6 @@ int main(int argc, char **argv)
 			break;
 		case 'd':
 			missing_namespace_deps = optarg;
-			break;
-		case 'v':
-			strncpy(module_scmversion, optarg, sizeof(module_scmversion) - 1);
 			break;
 		default:
 			exit(1);
@@ -2646,7 +2630,6 @@ int main(int argc, char **argv)
 		add_depends(&buf, mod);
 		add_moddevtable(&buf, mod);
 		add_srcversion(&buf, mod);
-		add_scmversion(&buf);
 
 		sprintf(fname, "%s.mod.c", mod->name);
 		write_if_changed(&buf, fname);

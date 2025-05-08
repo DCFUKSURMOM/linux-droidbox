@@ -38,7 +38,6 @@ Currently, these files are in /proc/sys/vm:
 - dirty_writeback_centisecs
 - drop_caches
 - extfrag_threshold
-- extra_free_kbytes
 - highmem_is_dirtyable
 - hugetlb_shm_group
 - laptop_mode
@@ -147,7 +146,7 @@ This should be used on systems where stalls for minor page faults are an
 acceptable trade for large contiguous free memory.  Set to 0 to prevent
 compaction from moving pages that are unevictable.  Default value is 1.
 On CONFIG_PREEMPT_RT the default value is 0 in order to avoid a page fault, due
-to compaction, which would block the task from becomming active until the fault
+to compaction, which would block the task from becoming active until the fault
 is resolved.
 
 
@@ -308,21 +307,6 @@ only use the low memory and they can fill it up with dirty data without
 any throttling.
 
 
-extra_free_kbytes
-
-This parameter tells the VM to keep extra free memory between the threshold
-where background reclaim (kswapd) kicks in, and the threshold where direct
-reclaim (by allocating processes) kicks in.
-
-This is useful for workloads that require low latency memory allocations
-and have a bounded burstiness in memory allocations, for example a
-realtime application that receives and transmits network traffic
-(causing in-kernel memory allocations) with a maximum total message burst
-size of 200MB may need 200MB of extra free memory to avoid direct reclaim
-related latencies.
-
-==============================================================
-
 hugetlb_shm_group
 =================
 
@@ -444,7 +428,7 @@ While most applications need less than a thousand maps, certain
 programs, particularly malloc debuggers, may consume lots of them,
 e.g., up to one or two maps per allocation.
 
-The default value is 65536.
+The default value is 65530.
 
 
 memory_failure_early_kill:
@@ -999,11 +983,11 @@ that benefit from having their data cached, zone_reclaim_mode should be
 left disabled as the caching effect is likely to be more important than
 data locality.
 
-Consider enabling one or more zone_reclaim mode bits if it's known that the
-workload is partitioned such that each partition fits within a NUMA node
-and that accessing remote memory would cause a measurable performance
-reduction.  The page allocator will take additional actions before
-allocating off node pages.
+zone_reclaim may be enabled if it's known that the workload is partitioned
+such that each partition fits within a NUMA node and that accessing remote
+memory would cause a measurable performance reduction.  The page allocator
+will then reclaim easily reusable pages (those page cache pages that are
+currently not used) before allocating off node pages.
 
 Allowing zone reclaim to write out pages stops processes that are
 writing large amounts of data from dirtying pages on other nodes. Zone

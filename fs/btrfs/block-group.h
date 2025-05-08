@@ -181,12 +181,6 @@ struct btrfs_block_group {
 	 */
 	int needs_free_space;
 
-	/*
-	 * Number of extents in this block group used for swap files.
-	 * All accesses protected by the spinlock 'lock'.
-	 */
-	int swap_extents;
-
 	/* Record locked full stripes for RAID5/6 block group */
 	struct btrfs_full_stripe_locks_tree full_stripe_locks_root;
 };
@@ -274,6 +268,8 @@ void check_system_chunk(struct btrfs_trans_handle *trans, const u64 type);
 u64 btrfs_get_alloc_profile(struct btrfs_fs_info *fs_info, u64 orig_flags);
 void btrfs_put_block_group_cache(struct btrfs_fs_info *info);
 int btrfs_free_block_groups(struct btrfs_fs_info *info);
+void btrfs_wait_space_cache_v1_finished(struct btrfs_block_group *cache,
+				struct btrfs_caching_control *caching_ctl);
 
 static inline u64 btrfs_data_alloc_profile(struct btrfs_fs_info *fs_info)
 {
@@ -304,8 +300,5 @@ void btrfs_unfreeze_block_group(struct btrfs_block_group *cache);
 int btrfs_rmap_block(struct btrfs_fs_info *fs_info, u64 chunk_start,
 		     u64 physical, u64 **logical, int *naddrs, int *stripe_len);
 #endif
-
-bool btrfs_inc_block_group_swap_extents(struct btrfs_block_group *bg);
-void btrfs_dec_block_group_swap_extents(struct btrfs_block_group *bg, int amount);
 
 #endif /* BTRFS_BLOCK_GROUP_H */

@@ -13,7 +13,6 @@ config ARM64
 	select ARCH_BINFMT_ELF_STATE
 	select ARCH_HAS_DEBUG_VIRTUAL
 	select ARCH_HAS_DEBUG_VM_PGTABLE
-	select ARCH_HAS_DEVMEM_IS_ALLOWED
 	select ARCH_HAS_DMA_PREP_COHERENT
 	select ARCH_HAS_ACPI_TABLE_UPGRADE if ACPI
 	select ARCH_HAS_FAST_MULTIPLIER
@@ -71,10 +70,9 @@ config ARM64
 	select ARCH_USE_QUEUED_RWLOCKS
 	select ARCH_USE_QUEUED_SPINLOCKS
 	select ARCH_USE_SYM_ANNOTATIONS
+	select ARCH_SUPPORTS_DEBUG_PAGEALLOC
 	select ARCH_SUPPORTS_MEMORY_FAILURE
 	select ARCH_SUPPORTS_SHADOW_CALL_STACK if CC_HAVE_SHADOW_CALL_STACK
-	select ARCH_SUPPORTS_LTO_CLANG if CPU_LITTLE_ENDIAN
-	select ARCH_SUPPORTS_LTO_CLANG_THIN
 	select ARCH_SUPPORTS_ATOMIC_RMW
 	select ARCH_SUPPORTS_INT128 if CC_HAS_INT128 && (GCC_VERSION >= 50000 || CC_IS_CLANG)
 	select ARCH_SUPPORTS_NUMA_BALANCING
@@ -104,7 +102,6 @@ config ARM64
 	select FRAME_POINTER
 	select GENERIC_ALLOCATOR
 	select GENERIC_ARCH_TOPOLOGY
-	select GENERIC_CLOCKEVENTS
 	select GENERIC_CLOCKEVENTS_BROADCAST
 	select GENERIC_CPU_AUTOPROBE
 	select GENERIC_CPU_VULNERABILITIES
@@ -115,6 +112,7 @@ config ARM64
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
 	select GENERIC_IRQ_SHOW_LEVEL
+	select GENERIC_LIB_DEVMEM_IS_ALLOWED
 	select GENERIC_PCI_IOMAP
 	select GENERIC_PTDUMP
 	select GENERIC_SCHED_CLOCK
@@ -140,10 +138,10 @@ config ARM64
 	select HAVE_ARCH_KASAN if !(ARM64_16K_PAGES && ARM64_VA_BITS_48)
 	select HAVE_ARCH_KASAN_SW_TAGS if HAVE_ARCH_KASAN
 	select HAVE_ARCH_KASAN_HW_TAGS if (HAVE_ARCH_KASAN && ARM64_MTE)
-	select HAVE_ARCH_KFENCE
 	select HAVE_ARCH_KGDB
 	select HAVE_ARCH_MMAP_RND_BITS
 	select HAVE_ARCH_MMAP_RND_COMPAT_BITS if COMPAT
+	select HAVE_ARCH_PFN_VALID
 	select HAVE_ARCH_PREL32_RELOCATIONS
 	select HAVE_ARCH_SECCOMP_FILTER
 	select HAVE_ARCH_STACKLEAK
@@ -164,8 +162,6 @@ config ARM64
 	select HAVE_DYNAMIC_FTRACE
 	select HAVE_DYNAMIC_FTRACE_WITH_REGS \
 		if $(cc-option,-fpatchable-function-entry=2)
-	select FTRACE_MCOUNT_USE_PATCHABLE_FUNCTION_ENTRY \
-		if DYNAMIC_FTRACE_WITH_REGS
 	select HAVE_EFFICIENT_UNALIGNED_ACCESS
 	select HAVE_FAST_GUP
 	select HAVE_FTRACE_MCOUNT_RECORD
@@ -203,13 +199,10 @@ config ARM64
 	select PCI_SYSCALL if PCI
 	select POWER_RESET
 	select POWER_SUPPLY
-	select SET_FS
 	select SPARSE_IRQ
 	select SWIOTLB
 	select SYSCTL_EXCEPTION_TRACE
 	select THREAD_INFO_IN_TASK
-	select ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
-	select HAVE_ARCH_USERFAULTFD_MINOR if USERFAULTFD
 	help
 	  ARM 64-bit (AArch64) Linux support.
 
@@ -341,16 +334,16 @@ config BROKEN_GAS_INST
 config KASAN_SHADOW_OFFSET
 	hex
 	depends on KASAN_GENERIC || KASAN_SW_TAGS
-	default 0xdfffa00000000000 if (ARM64_VA_BITS_48 || ARM64_VA_BITS_52) && !KASAN_SW_TAGS
-	default 0xdfffd00000000000 if ARM64_VA_BITS_47 && !KASAN_SW_TAGS
-	default 0xdffffe8000000000 if ARM64_VA_BITS_42 && !KASAN_SW_TAGS
-	default 0xdfffffd000000000 if ARM64_VA_BITS_39 && !KASAN_SW_TAGS
-	default 0xdffffffa00000000 if ARM64_VA_BITS_36 && !KASAN_SW_TAGS
-	default 0xefff900000000000 if (ARM64_VA_BITS_48 || ARM64_VA_BITS_52) && KASAN_SW_TAGS
-	default 0xefffc80000000000 if ARM64_VA_BITS_47 && KASAN_SW_TAGS
-	default 0xeffffe4000000000 if ARM64_VA_BITS_42 && KASAN_SW_TAGS
-	default 0xefffffc800000000 if ARM64_VA_BITS_39 && KASAN_SW_TAGS
-	default 0xeffffff900000000 if ARM64_VA_BITS_36 && KASAN_SW_TAGS
+	default 0xdfff800000000000 if (ARM64_VA_BITS_48 || ARM64_VA_BITS_52) && !KASAN_SW_TAGS
+	default 0xdfffc00000000000 if ARM64_VA_BITS_47 && !KASAN_SW_TAGS
+	default 0xdffffe0000000000 if ARM64_VA_BITS_42 && !KASAN_SW_TAGS
+	default 0xdfffffc000000000 if ARM64_VA_BITS_39 && !KASAN_SW_TAGS
+	default 0xdffffff800000000 if ARM64_VA_BITS_36 && !KASAN_SW_TAGS
+	default 0xefff800000000000 if (ARM64_VA_BITS_48 || ARM64_VA_BITS_52) && KASAN_SW_TAGS
+	default 0xefffc00000000000 if ARM64_VA_BITS_47 && KASAN_SW_TAGS
+	default 0xeffffe0000000000 if ARM64_VA_BITS_42 && KASAN_SW_TAGS
+	default 0xefffffc000000000 if ARM64_VA_BITS_39 && KASAN_SW_TAGS
+	default 0xeffffff800000000 if ARM64_VA_BITS_36 && KASAN_SW_TAGS
 	default 0xffffffffffffffff
 
 source "arch/arm64/Kconfig.platforms"
@@ -529,7 +522,7 @@ config ARM64_ERRATUM_1024718
 	help
 	  This option adds a workaround for ARM Cortex-A55 Erratum 1024718.
 
-	  Affected Cortex-A55 cores (all revisions) could cause incorrect
+	  Affected Cortex-A55 cores (r0p0, r0p1, r1p0) could cause incorrect
 	  update of the hardware dirty bit when the DBM/AP bits are updated
 	  without a break-before-make. The workaround is to disable the usage
 	  of hardware DBM locally on the affected cores. CPUs not affected by
@@ -959,9 +952,8 @@ choice
 	  that is selected here.
 
 config CPU_BIG_ENDIAN
-	bool "Build big-endian kernel"
-	depends on !LD_IS_LLD || LLD_VERSION >= 130000
-	help
+       bool "Build big-endian kernel"
+       help
 	  Say Y if you plan on running a kernel with a big-endian userspace.
 
 config CPU_LITTLE_ENDIAN
@@ -1036,9 +1028,6 @@ config HOLES_IN_ZONE
 
 source "kernel/Kconfig.hz"
 
-config ARCH_SUPPORTS_DEBUG_PAGEALLOC
-	def_bool y
-
 config ARCH_SPARSEMEM_ENABLE
 	def_bool y
 	select SPARSEMEM_VMEMMAP_ENABLE
@@ -1051,9 +1040,6 @@ config ARCH_SELECT_MEMORY_MODEL
 
 config ARCH_FLATMEM_ENABLE
 	def_bool !NUMA
-
-config HAVE_ARCH_PFN_VALID
-	def_bool y
 
 config HW_PERF_EVENTS
 	def_bool y
@@ -1439,27 +1425,6 @@ endmenu
 
 menu "ARMv8.2 architectural features"
 
-config ARM64_UAO
-	bool "Enable support for User Access Override (UAO)"
-	default y
-	help
-	  User Access Override (UAO; part of the ARMv8.2 Extensions)
-	  causes the 'unprivileged' variant of the load/store instructions to
-	  be overridden to be privileged.
-
-	  This option changes get_user() and friends to use the 'unprivileged'
-	  variant of the load/store instructions. This ensures that user-space
-	  really did have access to the supplied memory. When addr_limit is
-	  set to kernel memory the UAO bit will be set, allowing privileged
-	  access to kernel memory.
-
-	  Choosing this option will cause copy_to_user() et al to use user-space
-	  memory permissions.
-
-	  The feature is detected at runtime, the kernel will use the
-	  regular load/store instructions if the cpu does not implement the
-	  feature.
-
 config ARM64_PMEM
 	bool "Enable support for persistent memory"
 	select ARCH_HAS_PMEM_API
@@ -1639,8 +1604,6 @@ config ARM64_BTI_KERNEL
 	# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=94697
 	depends on !CC_IS_GCC || GCC_VERSION >= 100100
 	depends on !(CC_IS_CLANG && GCOV_KERNEL)
-	# https://bugs.llvm.org/show_bug.cgi?id=46258
-	depends on !CFI_CLANG || CLANG_VERSION >= 120000
 	depends on (!FUNCTION_GRAPH_TRACER || DYNAMIC_FTRACE_WITH_REGS)
 	help
 	  Build the kernel with Branch Target Identification annotations
@@ -1713,6 +1676,7 @@ endmenu
 config ARM64_SVE
 	bool "ARM Scalable Vector Extension support"
 	default y
+	depends on !KVM || ARM64_VHE
 	help
 	  The Scalable Vector Extension (SVE) is an extension to the AArch64
 	  execution state which complements and extends the SIMD functionality
@@ -1740,6 +1704,12 @@ config ARM64_SVE
 	  fixed.  Otherwise, you may experience firmware panics or lockups when
 	  booting the kernel.  If unsure and you are not observing these
 	  symptoms, you should assume that it is safe to say Y.
+
+	  CPUs that support SVE are architecturally required to support the
+	  Virtualization Host Extensions (VHE), so the kernel makes no
+	  provision for supporting SVE alongside KVM without VHE enabled.
+	  Thus, you will need to enable CONFIG_ARM64_VHE if you want to support
+	  KVM in the same kernel image.
 
 config ARM64_MODULE_PLTS
 	bool "Use PLTs to allow module memory to spill over into vmalloc area"
@@ -1905,6 +1875,7 @@ config EFI
 	select EFI_RUNTIME_WRAPPERS
 	select EFI_STUB
 	select EFI_GENERIC_STUB
+	imply IMA_SECURE_AND_OR_TRUSTED_BOOT
 	default y
 	help
 	  This option provides support for runtime services provided

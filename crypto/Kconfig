@@ -201,7 +201,7 @@ config CRYPTO_AUTHENC
 
 config CRYPTO_TEST
 	tristate "Testing module"
-	depends on m
+	depends on m || EXPERT
 	select CRYPTO_MANAGER
 	help
 	  Quick & dirty crypto test module.
@@ -772,7 +772,7 @@ config CRYPTO_POLY1305_X86_64
 
 config CRYPTO_POLY1305_MIPS
 	tristate "Poly1305 authenticator algorithm (MIPS optimized)"
-	depends on MIPS
+	depends on CPU_MIPS32 || (CPU_MIPS64 && 64BIT)
 	select CRYPTO_ARCH_HAVE_LIB_POLY1305
 
 config CRYPTO_MD4

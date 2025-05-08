@@ -9,7 +9,6 @@
 #define _LINUX_PM_DOMAIN_H
 
 #include <linux/device.h>
-#include <linux/ktime.h>
 #include <linux/mutex.h>
 #include <linux/pm.h>
 #include <linux/err.h>
@@ -56,19 +55,13 @@
  *
  * GENPD_FLAG_RPM_ALWAYS_ON:	Instructs genpd to always keep the PM domain
  *				powered on except for system suspend.
- *
- * GENPD_FLAG_GOV_NEXT_WAKEUP:	Enable the genpd governor to consider its
- *				components' next wakeup when  determining the
- *				optimal idle state. This is setup only if the
- *				domain's idle state specifies a residency.
  */
-#define GENPD_FLAG_PM_CLK	   (1U << 0)
-#define GENPD_FLAG_IRQ_SAFE	   (1U << 1)
-#define GENPD_FLAG_ALWAYS_ON	   (1U << 2)
-#define GENPD_FLAG_ACTIVE_WAKEUP   (1U << 3)
-#define GENPD_FLAG_CPU_DOMAIN	   (1U << 4)
-#define GENPD_FLAG_RPM_ALWAYS_ON   (1U << 5)
-#define GENPD_FLAG_GOV_NEXT_WAKEUP (1U << 6)
+#define GENPD_FLAG_PM_CLK	 (1U << 0)
+#define GENPD_FLAG_IRQ_SAFE	 (1U << 1)
+#define GENPD_FLAG_ALWAYS_ON	 (1U << 2)
+#define GENPD_FLAG_ACTIVE_WAKEUP (1U << 3)
+#define GENPD_FLAG_CPU_DOMAIN	 (1U << 4)
+#define GENPD_FLAG_RPM_ALWAYS_ON (1U << 5)
 
 enum gpd_status {
 	GENPD_STATE_ON = 0,	/* PM domain is on */
@@ -136,7 +129,6 @@ struct generic_pm_domain {
 				     unsigned int state);
 	struct gpd_dev_ops dev_ops;
 	s64 max_off_time_ns;	/* Maximum allowed "suspended" time. */
-	ktime_t next_wakeup;	/* Maintained by the domain governor */
 	bool max_off_time_changed;
 	bool cached_power_down_ok;
 	bool cached_power_down_state_idx;
@@ -199,7 +191,6 @@ struct generic_pm_domain_data {
 	struct notifier_block *power_nb;
 	int cpu;
 	unsigned int performance_state;
-	ktime_t	next_wakeup;
 	void *data;
 };
 
@@ -214,11 +205,6 @@ static inline struct generic_pm_domain_data *dev_gpd_data(struct device *dev)
 	return to_gpd_data(dev->power.subsys_data->domain_data);
 }
 
-static inline bool genpd_may_use_next_wakeup(struct generic_pm_domain *genpd)
-{
-	return genpd->flags & GENPD_FLAG_GOV_NEXT_WAKEUP;
-}
-
 int pm_genpd_add_device(struct generic_pm_domain *genpd, struct device *dev);
 int pm_genpd_remove_device(struct device *dev);
 int pm_genpd_add_subdomain(struct generic_pm_domain *genpd,
@@ -231,8 +217,6 @@ int pm_genpd_remove(struct generic_pm_domain *genpd);
 int dev_pm_genpd_set_performance_state(struct device *dev, unsigned int state);
 int dev_pm_genpd_add_notifier(struct device *dev, struct notifier_block *nb);
 int dev_pm_genpd_remove_notifier(struct device *dev);
-void genpd_enable_next_wakeup(struct generic_pm_domain *genpd, bool enable);
-int dev_pm_genpd_set_next_wakeup(struct device *dev, ktime_t next);
 
 extern struct dev_power_governor simple_qos_governor;
 extern struct dev_power_governor pm_domain_always_on_gov;
@@ -271,31 +255,22 @@ static inline int pm_genpd_init(struct generic_pm_domain *genpd,
 }
 static inline int pm_genpd_remove(struct generic_pm_domain *genpd)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static inline int dev_pm_genpd_set_performance_state(struct device *dev,
 						     unsigned int state)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static inline int dev_pm_genpd_add_notifier(struct device *dev,
 					    struct notifier_block *nb)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static inline int dev_pm_genpd_remove_notifier(struct device *dev)
-{
-	return -ENOTSUPP;
-}
-
-static void genpd_enable_next_wakeup(struct generic_pm_domain *genpd,
-				     bool enable)
-{ }
-
-static inline int dev_pm_genpd_set_next_wakeup(struct device *dev, ktime_t next)
 {
 	return -EOPNOTSUPP;
 }
@@ -350,13 +325,13 @@ struct device *genpd_dev_pm_attach_by_name(struct device *dev,
 static inline int of_genpd_add_provider_simple(struct device_node *np,
 					struct generic_pm_domain *genpd)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static inline int of_genpd_add_provider_onecell(struct device_node *np,
 					struct genpd_onecell_data *data)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 
 static inline void of_genpd_del_provider(struct device_node *np) {}
@@ -412,7 +387,7 @@ static inline struct device *genpd_dev_pm_attach_by_name(struct device *dev,
 static inline
 struct generic_pm_domain *of_genpd_remove_last(struct device_node *np)
 {
-	return ERR_PTR(-ENOTSUPP);
+	return ERR_PTR(-EOPNOTSUPP);
 }
 #endif /* CONFIG_PM_GENERIC_DOMAINS_OF */
 

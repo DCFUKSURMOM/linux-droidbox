@@ -2884,7 +2884,7 @@ static int bnxt_alloc_rx_rings(struct bnxt *bp)
 		if (rc)
 			return rc;
 
-		rc = xdp_rxq_info_reg(&rxr->xdp_rxq, bp->dev, i);
+		rc = xdp_rxq_info_reg(&rxr->xdp_rxq, bp->dev, i, 0);
 		if (rc < 0)
 			return rc;
 
@@ -8430,17 +8430,9 @@ static void bnxt_setup_inta(struct bnxt *bp)
 	bp->irq_tbl[0].handler = bnxt_inta;
 }
 
-static int bnxt_init_int_mode(struct bnxt *bp);
-
 static int bnxt_setup_int_mode(struct bnxt *bp)
 {
 	int rc;
-
-	if (!bp->irq_tbl) {
-		rc = bnxt_init_int_mode(bp);
-		if (rc || !bp->irq_tbl)
-			return rc ?: -ENODEV;
-	}
 
 	if (bp->flags & BNXT_FLAG_USING_MSIX)
 		bnxt_setup_msix(bp);
@@ -8626,7 +8618,7 @@ static int bnxt_init_inta(struct bnxt *bp)
 
 static int bnxt_init_int_mode(struct bnxt *bp)
 {
-	int rc = -ENODEV;
+	int rc = 0;
 
 	if (bp->flags & BNXT_FLAG_MSIX_CAP)
 		rc = bnxt_init_msix(bp);
@@ -8864,10 +8856,9 @@ void bnxt_tx_disable(struct bnxt *bp)
 			txr->dev_state = BNXT_DEV_STATE_CLOSING;
 		}
 	}
-	/* Drop carrier first to prevent TX timeout */
-	netif_carrier_off(bp->dev);
 	/* Stop all TX queues */
 	netif_tx_disable(bp->dev);
+	netif_carrier_off(bp->dev);
 }
 
 void bnxt_tx_enable(struct bnxt *bp)
@@ -9347,8 +9338,7 @@ static int bnxt_hwrm_if_change(struct bnxt *bp, bool up)
 {
 	struct hwrm_func_drv_if_change_output *resp = bp->hwrm_cmd_resp_addr;
 	struct hwrm_func_drv_if_change_input req = {0};
-	bool fw_reset = !bp->irq_tbl;
-	bool resc_reinit = false;
+	bool resc_reinit = false, fw_reset = false;
 	u32 flags = 0;
 	int rc;
 
@@ -9376,7 +9366,6 @@ static int bnxt_hwrm_if_change(struct bnxt *bp, bool up)
 
 	if (test_bit(BNXT_STATE_IN_FW_RESET, &bp->state) && !fw_reset) {
 		netdev_err(bp->dev, "RESET_DONE not set during FW reset.\n");
-		set_bit(BNXT_STATE_ABORT_ERR, &bp->state);
 		return -ENODEV;
 	}
 	if (resc_reinit || fw_reset) {

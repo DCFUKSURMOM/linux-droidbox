@@ -24,7 +24,6 @@
 #include <linux/tick.h>
 #include <linux/mmu_context.h>
 #include <trace/events/power.h>
-#include <trace/hooks/cpuidle.h>
 
 #include "cpuidle.h"
 
@@ -203,17 +202,9 @@ int cpuidle_enter_state(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 {
 	int entered_state;
 
-	struct cpuidle_state *target_state;
-	bool broadcast;
+	struct cpuidle_state *target_state = &drv->states[index];
+	bool broadcast = !!(target_state->flags & CPUIDLE_FLAG_TIMER_STOP);
 	ktime_t time_start, time_end;
-
-	/*
-	 * The vendor hook may modify index, which means target_state and
-	 * broadcast must be assigned after the vendor hook.
-	 */
-	trace_android_vh_cpu_idle_enter(&index, dev);
-	target_state = &drv->states[index];
-	broadcast = !!(target_state->flags & CPUIDLE_FLAG_TIMER_STOP);
 
 	/*
 	 * Tell the time framework to switch to a broadcast timer because our
@@ -251,7 +242,6 @@ int cpuidle_enter_state(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	sched_clock_idle_wakeup_event();
 	time_end = ns_to_ktime(local_clock());
 	trace_cpu_idle(PWR_EVENT_EXIT, dev->cpu);
-	trace_android_vh_cpu_idle_exit(entered_state, dev);
 
 	/* The cpu is no longer idle or about to enter idle. */
 	sched_idle_set_state(NULL);
@@ -378,6 +368,19 @@ void cpuidle_reflect(struct cpuidle_device *dev, int index)
 		cpuidle_curr_governor->reflect(dev, index);
 }
 
+/*
+ * Min polling interval of 10usec is a guess. It is assuming that
+ * for most users, the time for a single ping-pong workload like
+ * perf bench pipe would generally complete within 10usec but
+ * this is hardware dependant. Actual time can be estimated with
+ *
+ * perf bench sched pipe -l 10000
+ *
+ * Run multiple times to avoid cpufreq effects.
+ */
+#define CPUIDLE_POLL_MIN 10000
+#define CPUIDLE_POLL_MAX (TICK_NSEC / 16)
+
 /**
  * cpuidle_poll_time - return amount of time to poll for,
  * governors can override dev->poll_limit_ns if necessary
@@ -392,15 +395,23 @@ u64 cpuidle_poll_time(struct cpuidle_driver *drv,
 	int i;
 	u64 limit_ns;
 
+	BUILD_BUG_ON(CPUIDLE_POLL_MIN > CPUIDLE_POLL_MAX);
+
 	if (dev->poll_limit_ns)
 		return dev->poll_limit_ns;
 
-	limit_ns = TICK_NSEC;
+	limit_ns = CPUIDLE_POLL_MAX;
 	for (i = 1; i < drv->state_count; i++) {
+		u64 state_limit;
+
 		if (dev->states_usage[i].disable)
 			continue;
 
-		limit_ns = drv->states[i].target_residency_ns;
+		state_limit = drv->states[i].target_residency_ns;
+		if (state_limit < CPUIDLE_POLL_MIN)
+			continue;
+
+		limit_ns = min_t(u64, state_limit, CPUIDLE_POLL_MAX);
 		break;
 	}
 

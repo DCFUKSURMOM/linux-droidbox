@@ -8,9 +8,6 @@
 #ifndef __ASM_PROCESSOR_H
 #define __ASM_PROCESSOR_H
 
-#define KERNEL_DS		UL(-1)
-#define USER_DS			((UL(1) << VA_BITS) - 1)
-
 /*
  * On arm64 systems, unaligned accesses by the CPU are cheap, and so there is
  * no point in shifting all network buffers by 2 bytes just to make some IP
@@ -27,7 +24,6 @@
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/thread_info.h>
-#include <linux/android_vendor.h>
 
 #include <vdso/processor.h>
 
@@ -49,6 +45,7 @@
 
 #define DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_MIN)
 #define TASK_SIZE_64		(UL(1) << vabits_actual)
+#define TASK_SIZE_MAX		(UL(1) << VA_BITS)
 
 #ifdef CONFIG_COMPAT
 #if defined(CONFIG_ARM64_64K_PAGES) && defined(CONFIG_KUSER_HELPERS)
@@ -97,8 +94,7 @@
 #endif /* CONFIG_ARM64_FORCE_52BIT */
 
 extern phys_addr_t arm64_dma_phys_limit;
-extern phys_addr_t arm64_dma32_phys_limit;
-#define ARCH_LOW_ADDRESS_LIMIT	((arm64_dma_phys_limit ? : arm64_dma32_phys_limit) - 1)
+#define ARCH_LOW_ADDRESS_LIMIT	(arm64_dma_phys_limit - 1)
 
 struct debug_info {
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
@@ -142,8 +138,6 @@ struct thread_struct {
 		unsigned long	tp2_value;
 		struct user_fpsimd_state fpsimd_state;
 	} uw;
-
-	ANDROID_VENDOR_DATA(1);
 
 	unsigned int		fpsimd_cpu;
 	void			*sve_state;	/* SVE registers, if any */

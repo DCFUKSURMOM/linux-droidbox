@@ -560,8 +560,6 @@ static struct sh_eth_cpu_data r7s72100_data = {
 			  EESR_TDE,
 	.fdr_value	= 0x0000070f,
 
-	.trscer_err_mask = DESC_I_RINT8 | DESC_I_RINT5,
-
 	.no_psr		= 1,
 	.apr		= 1,
 	.mpr		= 1,
@@ -781,8 +779,6 @@ static struct sh_eth_cpu_data r7s9210_data = {
 			  EESR_RDE | EESR_RFRMER | EESR_TFE | EESR_TDE,
 
 	.fdr_value	= 0x0000070f,
-
-	.trscer_err_mask = DESC_I_RINT8 | DESC_I_RINT5,
 
 	.apr		= 1,
 	.mpr		= 1,
@@ -1093,9 +1089,6 @@ static struct sh_eth_cpu_data sh771x_data = {
 			  EESIPR_CEEFIP | EESIPR_CELFIP |
 			  EESIPR_RRFIP | EESIPR_RTLFIP | EESIPR_RTSFIP |
 			  EESIPR_PREIP | EESIPR_CERFIP,
-
-	.trscer_err_mask = DESC_I_RINT8,
-
 	.tsu		= 1,
 	.dual_port	= 1,
 };
@@ -3041,6 +3034,28 @@ static int sh_mdio_release(struct sh_eth_private *mdp)
 	return 0;
 }
 
+static int sh_mdiobb_read(struct mii_bus *bus, int phy, int reg)
+{
+	int res;
+
+	pm_runtime_get_sync(bus->parent);
+	res = mdiobb_read(bus, phy, reg);
+	pm_runtime_put(bus->parent);
+
+	return res;
+}
+
+static int sh_mdiobb_write(struct mii_bus *bus, int phy, int reg, u16 val)
+{
+	int res;
+
+	pm_runtime_get_sync(bus->parent);
+	res = mdiobb_write(bus, phy, reg, val);
+	pm_runtime_put(bus->parent);
+
+	return res;
+}
+
 /* MDIO bus init function */
 static int sh_mdio_init(struct sh_eth_private *mdp,
 			struct sh_eth_plat_data *pd)
@@ -3064,6 +3079,10 @@ static int sh_mdio_init(struct sh_eth_private *mdp,
 	mdp->mii_bus = alloc_mdio_bitbang(&bitbang->ctrl);
 	if (!mdp->mii_bus)
 		return -ENOMEM;
+
+	/* Wrap accessors with Runtime PM-aware ops */
+	mdp->mii_bus->read = sh_mdiobb_read;
+	mdp->mii_bus->write = sh_mdiobb_write;
 
 	/* Hook up MII support for ethtool */
 	mdp->mii_bus->name = "sh_mii";

@@ -258,16 +258,34 @@ static struct dst_ops ip6_dst_ops_template = {
 	.confirm_neigh		=	ip6_confirm_neigh,
 };
 
+static unsigned int ip6_blackhole_mtu(const struct dst_entry *dst)
+{
+	unsigned int mtu = dst_metric_raw(dst, RTAX_MTU);
+
+	return mtu ? : dst->dev->mtu;
+}
+
+static void ip6_rt_blackhole_update_pmtu(struct dst_entry *dst, struct sock *sk,
+					 struct sk_buff *skb, u32 mtu,
+					 bool confirm_neigh)
+{
+}
+
+static void ip6_rt_blackhole_redirect(struct dst_entry *dst, struct sock *sk,
+				      struct sk_buff *skb)
+{
+}
+
 static struct dst_ops ip6_dst_blackhole_ops = {
-	.family			= AF_INET6,
-	.default_advmss		= ip6_default_advmss,
-	.neigh_lookup		= ip6_dst_neigh_lookup,
-	.check			= ip6_dst_check,
-	.destroy		= ip6_dst_destroy,
-	.cow_metrics		= dst_cow_metrics_generic,
-	.update_pmtu		= dst_blackhole_update_pmtu,
-	.redirect		= dst_blackhole_redirect,
-	.mtu			= dst_blackhole_mtu,
+	.family			=	AF_INET6,
+	.destroy		=	ip6_dst_destroy,
+	.check			=	ip6_dst_check,
+	.mtu			=	ip6_blackhole_mtu,
+	.default_advmss		=	ip6_default_advmss,
+	.update_pmtu		=	ip6_rt_blackhole_update_pmtu,
+	.redirect		=	ip6_rt_blackhole_redirect,
+	.cow_metrics		=	dst_cow_metrics_generic,
+	.neigh_lookup		=	ip6_dst_neigh_lookup,
 };
 
 static const u32 ip6_template_metrics[RTAX_MAX] = {
@@ -4131,7 +4149,7 @@ static struct fib6_info *rt6_get_route_info(struct net *net,
 					   const struct in6_addr *gwaddr,
 					   struct net_device *dev)
 {
-	u32 tb_id = l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_INFO);
+	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO;
 	int ifindex = dev->ifindex;
 	struct fib6_node *fn;
 	struct fib6_info *rt = NULL;
@@ -4185,7 +4203,7 @@ static struct fib6_info *rt6_add_route_info(struct net *net,
 		.fc_nlinfo.nl_net = net,
 	};
 
-	cfg.fc_table = l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_INFO);
+	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO;
 	cfg.fc_dst = *prefix;
 	cfg.fc_gateway = *gwaddr;
 
@@ -4203,7 +4221,7 @@ struct fib6_info *rt6_get_dflt_router(struct net *net,
 				     const struct in6_addr *addr,
 				     struct net_device *dev)
 {
-	u32 tb_id = l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_DFLT);
+	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT;
 	struct fib6_info *rt;
 	struct fib6_table *table;
 
@@ -4237,7 +4255,7 @@ struct fib6_info *rt6_add_dflt_router(struct net *net,
 				     unsigned int pref)
 {
 	struct fib6_config cfg = {
-		.fc_table	= l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_DFLT),
+		.fc_table	= l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT,
 		.fc_metric	= IP6_RT_PRIO_USER,
 		.fc_ifindex	= dev->ifindex,
 		.fc_flags	= RTF_GATEWAY | RTF_ADDRCONF | RTF_DEFAULT |
@@ -4262,24 +4280,47 @@ struct fib6_info *rt6_add_dflt_router(struct net *net,
 	return rt6_get_dflt_router(net, gwaddr, dev);
 }
 
-static int rt6_addrconf_purge(struct fib6_info *rt, void *arg)
+static void __rt6_purge_dflt_routers(struct net *net,
+				     struct fib6_table *table)
 {
-	struct net_device *dev = fib6_info_nh_dev(rt);
-	struct inet6_dev *idev = dev ? __in6_dev_get(dev) : NULL;
+	struct fib6_info *rt;
 
-	if (rt->fib6_flags & (RTF_DEFAULT | RTF_ADDRCONF) &&
-	    (!idev || idev->cnf.accept_ra != 2)) {
-		/* Delete this route. See fib6_clean_tree() */
-		return -1;
+restart:
+	rcu_read_lock();
+	for_each_fib6_node_rt_rcu(&table->tb6_root) {
+		struct net_device *dev = fib6_info_nh_dev(rt);
+		struct inet6_dev *idev = dev ? __in6_dev_get(dev) : NULL;
+
+		if (rt->fib6_flags & (RTF_DEFAULT | RTF_ADDRCONF) &&
+		    (!idev || idev->cnf.accept_ra != 2) &&
+		    fib6_info_hold_safe(rt)) {
+			rcu_read_unlock();
+			ip6_del_rt(net, rt, false);
+			goto restart;
+		}
 	}
+	rcu_read_unlock();
 
-	/* Continue walking */
-	return 0;
+	table->flags &= ~RT6_TABLE_HAS_DFLT_ROUTER;
 }
 
 void rt6_purge_dflt_routers(struct net *net)
 {
-	fib6_clean_all(net, rt6_addrconf_purge, NULL);
+	struct fib6_table *table;
+	struct hlist_head *head;
+	unsigned int h;
+
+	rcu_read_lock();
+
+	for (h = 0; h < FIB6_TABLE_HASHSZ; h++) {
+		head = &net->ipv6.fib_table_hash[h];
+		hlist_for_each_entry_rcu(table, head, tb6_hlist) {
+			if (table->flags & RT6_TABLE_HAS_DFLT_ROUTER)
+				__rt6_purge_dflt_routers(net, table);
+		}
+	}
+
+	rcu_read_unlock();
 }
 
 static void rtmsg_to_fib6_config(struct net *net,
@@ -5180,11 +5221,9 @@ static int ip6_route_multipath_add(struct fib6_config *cfg,
 		 * nexthops have been replaced by first new, the rest should
 		 * be added to it.
 		 */
-		if (cfg->fc_nlinfo.nlh) {
-			cfg->fc_nlinfo.nlh->nlmsg_flags &= ~(NLM_F_EXCL |
-							     NLM_F_REPLACE);
-			cfg->fc_nlinfo.nlh->nlmsg_flags |= NLM_F_CREATE;
-		}
+		cfg->fc_nlinfo.nlh->nlmsg_flags &= ~(NLM_F_EXCL |
+						     NLM_F_REPLACE);
+		cfg->fc_nlinfo.nlh->nlmsg_flags |= NLM_F_CREATE;
 		nhn++;
 	}
 
@@ -5518,6 +5557,10 @@ static int rt6_fill_node(struct net *net, struct sk_buff *skb,
 			goto nla_put_failure;
 
 		if (dst->dev && nla_put_u32(skb, RTA_OIF, dst->dev->ifindex))
+			goto nla_put_failure;
+
+		if (dst->lwtstate &&
+		    lwtunnel_fill_encap(skb, dst->lwtstate, RTA_ENCAP, RTA_ENCAP_TYPE) < 0)
 			goto nla_put_failure;
 	} else if (rt->fib6_nsiblings) {
 		struct fib6_info *sibling, *next_sibling;
@@ -5999,11 +6042,6 @@ void fib6_rt_update(struct net *net, struct fib6_info *rt,
 	u32 seq = info->nlh ? info->nlh->nlmsg_seq : 0;
 	struct sk_buff *skb;
 	int err = -ENOBUFS;
-
-	/* call_fib6_entry_notifiers will be removed when in-kernel notifier
-	 * is implemented and supported for nexthop objects
-	 */
-	call_fib6_entry_notifiers(net, FIB_EVENT_ENTRY_REPLACE, rt, NULL);
 
 	skb = nlmsg_new(rt6_nlmsg_size(rt), gfp_any());
 	if (!skb)

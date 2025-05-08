@@ -19,16 +19,15 @@ Description:
 		identify removable sections of the memory before attempting
 		potentially expensive hot-remove memory operation
 Users:		hotplug memory remove tools
-		http://www.ibm.com/developerworks/wikis/display/LinuxP/powerpc-utils	
+		http://www.ibm.com/developerworks/wikis/display/LinuxP/powerpc-utils
 
 What:		/sys/devices/system/memory/memoryX/phys_device
 Date:		September 2008
 Contact:	Badari Pulavarty <pbadari@us.ibm.com>
 Description:
 		The file /sys/devices/system/memory/memoryX/phys_device
-		is read-only;  it is a legacy interface only ever used on s390x
-		to expose the covered storage increment.
-Users:		Legacy s390-tools lsmem/chmem
+		is read-only and is designed to show the name of physical
+		memory device.  Implementation is currently incomplete.
 
 What:		/sys/devices/system/memory/memoryX/phys_index
 Date:		September 2008

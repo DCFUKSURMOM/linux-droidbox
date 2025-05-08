@@ -314,18 +314,6 @@ static int mcp251x_spi_trans(struct spi_device *spi, int len)
 	return ret;
 }
 
-static int mcp251x_spi_write(struct spi_device *spi, int len)
-{
-	struct mcp251x_priv *priv = spi_get_drvdata(spi);
-	int ret;
-
-	ret = spi_write(spi, priv->spi_tx_buf, len);
-	if (ret)
-		dev_err(&spi->dev, "spi write failed: ret = %d\n", ret);
-
-	return ret;
-}
-
 static u8 mcp251x_read_reg(struct spi_device *spi, u8 reg)
 {
 	struct mcp251x_priv *priv = spi_get_drvdata(spi);
@@ -373,7 +361,7 @@ static void mcp251x_write_reg(struct spi_device *spi, u8 reg, u8 val)
 	priv->spi_tx_buf[1] = reg;
 	priv->spi_tx_buf[2] = val;
 
-	mcp251x_spi_write(spi, 3);
+	mcp251x_spi_trans(spi, 3);
 }
 
 static void mcp251x_write_2regs(struct spi_device *spi, u8 reg, u8 v1, u8 v2)
@@ -385,7 +373,7 @@ static void mcp251x_write_2regs(struct spi_device *spi, u8 reg, u8 v1, u8 v2)
 	priv->spi_tx_buf[2] = v1;
 	priv->spi_tx_buf[3] = v2;
 
-	mcp251x_spi_write(spi, 4);
+	mcp251x_spi_trans(spi, 4);
 }
 
 static void mcp251x_write_bits(struct spi_device *spi, u8 reg,
@@ -398,7 +386,7 @@ static void mcp251x_write_bits(struct spi_device *spi, u8 reg,
 	priv->spi_tx_buf[2] = mask;
 	priv->spi_tx_buf[3] = val;
 
-	mcp251x_spi_write(spi, 4);
+	mcp251x_spi_trans(spi, 4);
 }
 
 static u8 mcp251x_read_stat(struct spi_device *spi)
@@ -630,7 +618,7 @@ static void mcp251x_hw_tx_frame(struct spi_device *spi, u8 *buf,
 					  buf[i]);
 	} else {
 		memcpy(priv->spi_tx_buf, buf, TXBDAT_OFF + len);
-		mcp251x_spi_write(spi, TXBDAT_OFF + len);
+		mcp251x_spi_trans(spi, TXBDAT_OFF + len);
 	}
 }
 
@@ -656,13 +644,13 @@ static void mcp251x_hw_tx(struct spi_device *spi, struct can_frame *frame,
 		((eid >> SIDL_EID_SHIFT) & SIDL_EID_MASK);
 	buf[TXBEID8_OFF] = GET_BYTE(eid, 1);
 	buf[TXBEID0_OFF] = GET_BYTE(eid, 0);
-	buf[TXBDLC_OFF] = (rtr << DLC_RTR_SHIFT) | frame->can_dlc;
-	memcpy(buf + TXBDAT_OFF, frame->data, frame->can_dlc);
-	mcp251x_hw_tx_frame(spi, buf, frame->can_dlc, tx_buf_idx);
+	buf[TXBDLC_OFF] = (rtr << DLC_RTR_SHIFT) | frame->len;
+	memcpy(buf + TXBDAT_OFF, frame->data, frame->len);
+	mcp251x_hw_tx_frame(spi, buf, frame->len, tx_buf_idx);
 
 	/* use INSTRUCTION_RTS, to avoid "repeated frame problem" */
 	priv->spi_tx_buf[0] = INSTRUCTION_RTS(1 << tx_buf_idx);
-	mcp251x_spi_write(priv->spi, 1);
+	mcp251x_spi_trans(priv->spi, 1);
 }
 
 static void mcp251x_hw_rx_frame(struct spi_device *spi, u8 *buf,
@@ -676,7 +664,7 @@ static void mcp251x_hw_rx_frame(struct spi_device *spi, u8 *buf,
 		for (i = 1; i < RXBDAT_OFF; i++)
 			buf[i] = mcp251x_read_reg(spi, RXBCTRL(buf_idx) + i);
 
-		len = get_can_dlc(buf[RXBDLC_OFF] & RXBDLC_LEN_MASK);
+		len = can_cc_dlc2len(buf[RXBDLC_OFF] & RXBDLC_LEN_MASK);
 		for (; i < (RXBDAT_OFF + len); i++)
 			buf[i] = mcp251x_read_reg(spi, RXBCTRL(buf_idx) + i);
 	} else {
@@ -732,11 +720,11 @@ static void mcp251x_hw_rx(struct spi_device *spi, int buf_idx)
 			frame->can_id |= CAN_RTR_FLAG;
 	}
 	/* Data length */
-	frame->can_dlc = get_can_dlc(buf[RXBDLC_OFF] & RXBDLC_LEN_MASK);
-	memcpy(frame->data, buf + RXBDAT_OFF, frame->can_dlc);
+	frame->len = can_cc_dlc2len(buf[RXBDLC_OFF] & RXBDLC_LEN_MASK);
+	memcpy(frame->data, buf + RXBDAT_OFF, frame->len);
 
 	priv->net->stats.rx_packets++;
-	priv->net->stats.rx_bytes += frame->can_dlc;
+	priv->net->stats.rx_bytes += frame->len;
 
 	can_led_event(priv->net, CAN_LED_EVENT_RX);
 
@@ -900,7 +888,7 @@ static int mcp251x_hw_reset(struct spi_device *spi)
 	mdelay(MCP251X_OST_DELAY_MS);
 
 	priv->spi_tx_buf[0] = INSTRUCTION_RESET;
-	ret = mcp251x_spi_write(spi, 1);
+	ret = mcp251x_spi_trans(spi, 1);
 	if (ret)
 		return ret;
 
@@ -1010,10 +998,10 @@ static void mcp251x_tx_work_handler(struct work_struct *ws)
 		} else {
 			frame = (struct can_frame *)priv->tx_skb->data;
 
-			if (frame->can_dlc > CAN_FRAME_MAX_DATA_LEN)
-				frame->can_dlc = CAN_FRAME_MAX_DATA_LEN;
+			if (frame->len > CAN_FRAME_MAX_DATA_LEN)
+				frame->len = CAN_FRAME_MAX_DATA_LEN;
 			mcp251x_hw_tx(spi, frame, 0);
-			priv->tx_len = 1 + frame->can_dlc;
+			priv->tx_len = 1 + frame->len;
 			can_put_echo_skb(priv->tx_skb, net, 0);
 			priv->tx_skb = NULL;
 		}

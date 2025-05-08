@@ -4,7 +4,6 @@
  */
 
 #include <linux/adreno-smmu-priv.h>
-#include <linux/bitfield.h>
 #include <linux/of_device.h>
 #include <linux/qcom_scm.h>
 
@@ -16,41 +15,21 @@ struct qcom_smmu {
 	u8 bypass_cbndx;
 };
 
-static int qcom_sdm845_smmu500_cfg_probe(struct arm_smmu_device *smmu)
+static struct qcom_smmu *to_qcom_smmu(struct arm_smmu_device *smmu)
 {
-	u32 s2cr;
-	u32 smr;
-	int i;
+	return container_of(smmu, struct qcom_smmu, smmu);
+}
 
-	for (i = 0; i < smmu->num_mapping_groups; i++) {
-		smr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_SMR(i));
-		s2cr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_S2CR(i));
+static void qcom_adreno_smmu_write_sctlr(struct arm_smmu_device *smmu, int idx,
+		u32 reg)
+{
+	/*
+	 * On the GPU device we want to process subsequent transactions after a
+	 * fault to keep the GPU from hanging
+	 */
+	reg |= ARM_SMMU_SCTLR_HUPCF;
 
-		smmu->smrs[i].mask = FIELD_GET(ARM_SMMU_SMR_MASK, smr);
-		smmu->smrs[i].id = FIELD_GET(ARM_SMMU_SMR_ID, smr);
-		if (smmu->features & ARM_SMMU_FEAT_EXIDS)
-			smmu->smrs[i].valid = FIELD_GET(
-						ARM_SMMU_S2CR_EXIDVALID,
-						s2cr);
-		else
-			smmu->smrs[i].valid = FIELD_GET(
-						ARM_SMMU_SMR_VALID,
-						smr);
-
-		smmu->s2crs[i].group = NULL;
-		smmu->s2crs[i].count = 0;
-		smmu->s2crs[i].type = FIELD_GET(ARM_SMMU_S2CR_TYPE, s2cr);
-		smmu->s2crs[i].privcfg = FIELD_GET(ARM_SMMU_S2CR_PRIVCFG, s2cr);
-		smmu->s2crs[i].cbndx = FIELD_GET(ARM_SMMU_S2CR_CBNDX, s2cr);
-
-		if (!smmu->smrs[i].valid)
-			continue;
-
-		smmu->s2crs[i].pinned = true;
-		bitmap_set(smmu->context_map, smmu->s2crs[i].cbndx, 1);
-	}
-
-	return 0;
+	arm_smmu_cb_write(smmu, idx, ARM_SMMU_CB_SCTLR, reg);
 }
 
 #define QCOM_ADRENO_SMMU_GPU_SID 0
@@ -181,11 +160,6 @@ static int qcom_adreno_smmu_init_context(struct arm_smmu_domain *smmu_domain,
 	return 0;
 }
 
-static struct qcom_smmu *to_qcom_smmu(struct arm_smmu_device *smmu)
-{
-	return container_of(smmu, struct qcom_smmu, smmu);
-}
-
 static const struct of_device_id qcom_smmu_client_of_match[] __maybe_unused = {
 	{ .compatible = "qcom,adreno" },
 	{ .compatible = "qcom,mdp4" },
@@ -232,8 +206,6 @@ static int qcom_smmu_cfg_probe(struct arm_smmu_device *smmu)
 		smr = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_SMR(i));
 
 		if (FIELD_GET(ARM_SMMU_SMR_VALID, smr)) {
-			/* Ignore valid bit for SMR mask extraction. */
-			smr &= ~ARM_SMMU_SMR_VALID;
 			smmu->smrs[i].id = FIELD_GET(ARM_SMMU_SMR_ID, smr);
 			smmu->smrs[i].mask = FIELD_GET(ARM_SMMU_SMR_MASK, smr);
 			smmu->smrs[i].valid = true;
@@ -322,7 +294,6 @@ static int qcom_smmu500_reset(struct arm_smmu_device *smmu)
 static const struct arm_smmu_impl qcom_smmu_impl = {
 	.cfg_probe = qcom_smmu_cfg_probe,
 	.def_domain_type = qcom_smmu_def_domain_type,
-	.cfg_probe = qcom_sdm845_smmu500_cfg_probe,
 	.reset = qcom_smmu500_reset,
 	.write_s2cr = qcom_smmu_write_s2cr,
 };
@@ -332,6 +303,7 @@ static const struct arm_smmu_impl qcom_adreno_smmu_impl = {
 	.def_domain_type = qcom_smmu_def_domain_type,
 	.reset = qcom_smmu500_reset,
 	.alloc_context_bank = qcom_adreno_smmu_alloc_context_bank,
+	.write_sctlr = qcom_adreno_smmu_write_sctlr,
 };
 
 static struct arm_smmu_device *qcom_smmu_create(struct arm_smmu_device *smmu,
@@ -343,24 +315,34 @@ static struct arm_smmu_device *qcom_smmu_create(struct arm_smmu_device *smmu,
 	if (!qcom_scm_is_available())
 		return ERR_PTR(-EPROBE_DEFER);
 
-	qsmmu = devm_kzalloc(smmu->dev, sizeof(*qsmmu), GFP_KERNEL);
+	qsmmu = devm_krealloc(smmu->dev, smmu, sizeof(*qsmmu), GFP_KERNEL);
 	if (!qsmmu)
 		return ERR_PTR(-ENOMEM);
 
-	qsmmu->smmu = *smmu;
-
 	qsmmu->smmu.impl = impl;
-	devm_kfree(smmu->dev, smmu);
 
 	return &qsmmu->smmu;
 }
 
+static const struct of_device_id __maybe_unused qcom_smmu_impl_of_match[] = {
+	{ .compatible = "qcom,msm8998-smmu-v2" },
+	{ .compatible = "qcom,sc7180-smmu-500" },
+	{ .compatible = "qcom,sdm630-smmu-v2" },
+	{ .compatible = "qcom,sdm845-smmu-500" },
+	{ .compatible = "qcom,sm8150-smmu-500" },
+	{ .compatible = "qcom,sm8250-smmu-500" },
+	{ }
+};
+
 struct arm_smmu_device *qcom_smmu_impl_init(struct arm_smmu_device *smmu)
 {
-	return qcom_smmu_create(smmu, &qcom_smmu_impl);
-}
+	const struct device_node *np = smmu->dev->of_node;
 
-struct arm_smmu_device *qcom_adreno_smmu_impl_init(struct arm_smmu_device *smmu)
-{
-	return qcom_smmu_create(smmu, &qcom_adreno_smmu_impl);
+	if (of_match_node(qcom_smmu_impl_of_match, np))
+		return qcom_smmu_create(smmu, &qcom_smmu_impl);
+
+	if (of_device_is_compatible(np, "qcom,adreno-smmu"))
+		return qcom_smmu_create(smmu, &qcom_adreno_smmu_impl);
+
+	return smmu;
 }

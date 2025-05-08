@@ -41,7 +41,6 @@
 *.so.dbg
 *.su
 *.symtypes
-*.symversions
 *.tab.[ch]
 *.tar
 *.xz
@@ -156,5 +155,3 @@ x509.genkey
 
 # Documentation toolchain
 sphinx_*/
-
-configs

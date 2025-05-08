@@ -26,8 +26,6 @@
 #include <linux/tracepoint-defs.h>
 #include <linux/srcu.h>
 #include <linux/static_call_types.h>
-#include <linux/cfi.h>
-#include <linux/android_kabi.h>
 
 #include <linux/percpu.h>
 #include <asm/module.h>
@@ -68,7 +66,7 @@ struct module_version_attribute {
 	struct module_attribute mattr;
 	const char *module_name;
 	const char *version;
-} __attribute__ ((__aligned__(sizeof(void *))));
+};
 
 extern ssize_t __modver_version_show(struct module_attribute *,
 				     struct module_kobject *, char *);
@@ -133,17 +131,13 @@ extern void cleanup_module(void);
 #define module_init(initfn)					\
 	static inline initcall_t __maybe_unused __inittest(void)		\
 	{ return initfn; }					\
-	int init_module(void) __copy(initfn) 			\
-		__attribute__((alias(#initfn)));		\
-	__CFI_ADDRESSABLE(init_module)
+	int init_module(void) __copy(initfn) __attribute__((alias(#initfn)));
 
 /* This is only required if you want to be unloadable. */
 #define module_exit(exitfn)					\
 	static inline exitcall_t __maybe_unused __exittest(void)		\
 	{ return exitfn; }					\
-	void cleanup_module(void) __copy(exitfn) 		\
-		__attribute__((alias(#exitfn))); 		\
-	__CFI_ADDRESSABLE(cleanup_module)
+	void cleanup_module(void) __copy(exitfn) __attribute__((alias(#exitfn)));
 
 #endif
 
@@ -272,20 +266,20 @@ extern typeof(name) __mod_##type##__##name##_device_table		\
 #else
 #define MODULE_VERSION(_version)					\
 	MODULE_INFO(version, _version);					\
-	static struct module_version_attribute ___modver_attr = {	\
-		.mattr	= {						\
-			.attr	= {					\
-				.name	= "version",			\
-				.mode	= S_IRUGO,			\
+	static struct module_version_attribute __modver_attr		\
+		__used __section("__modver")				\
+		__aligned(__alignof__(struct module_version_attribute)) \
+		= {							\
+			.mattr	= {					\
+				.attr	= {				\
+					.name	= "version",		\
+					.mode	= S_IRUGO,		\
+				},					\
+				.show	= __modver_version_show,	\
 			},						\
-			.show	= __modver_version_show,		\
-		},							\
-		.module_name	= KBUILD_MODNAME,			\
-		.version	= _version,				\
-	};								\
-	static const struct module_version_attribute			\
-	__used __section("__modver")					\
-	* __moduleparam_const __modver_attr = &___modver_attr
+			.module_name	= KBUILD_MODNAME,		\
+			.version	= _version,			\
+		}
 #endif
 
 /* Optional firmware file (or files) needed by the module
@@ -378,17 +372,12 @@ struct module {
 	struct module_attribute *modinfo_attrs;
 	const char *version;
 	const char *srcversion;
-	const char *scmversion;
 	struct kobject *holders_dir;
 
 	/* Exported symbols */
 	const struct kernel_symbol *syms;
 	const s32 *crcs;
 	unsigned int num_syms;
-
-#ifdef CONFIG_CFI_CLANG
-	cfi_check_fn cfi_check;
-#endif
 
 	/* Kernel parameters. */
 #ifdef CONFIG_SYSFS
@@ -415,12 +404,10 @@ struct module {
 	const s32 *unused_gpl_crcs;
 #endif
 
-	/*
-	 * Signature was verified. Unconditionally compiled in Android to
-	 * preserve ABI compatibility between kernels without module
-	 * signing enabled and signed modules.
-	 */
+#ifdef CONFIG_MODULE_SIG
+	/* Signature was verified. */
 	bool sig_ok;
+#endif
 
 	bool async_probe_requested;
 
@@ -488,6 +475,10 @@ struct module {
 	unsigned int num_bpf_raw_events;
 	struct bpf_raw_event_map *bpf_raw_events;
 #endif
+#ifdef CONFIG_DEBUG_INFO_BTF_MODULES
+	unsigned int btf_data_size;
+	void *btf_data;
+#endif
 #ifdef CONFIG_JUMP_LABEL
 	struct jump_entry *jump_entries;
 	unsigned int num_jump_entries;
@@ -547,10 +538,6 @@ struct module {
 	struct error_injection_entry *ei_funcs;
 	unsigned int num_ei_funcs;
 #endif
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
-	ANDROID_KABI_RESERVE(3);
-	ANDROID_KABI_RESERVE(4);
 } ____cacheline_aligned __randomize_layout;
 #ifndef MODULE_ARCH_INIT
 #define MODULE_ARCH_INIT {}

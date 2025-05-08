@@ -157,9 +157,9 @@ static ssize_t write_irq_affinity(int type, struct file *file,
 	/*
 	 * Do not allow disabling IRQs completely - it's a too easy
 	 * way to make the system unusable accidentally :-) At least
-	 * one active CPU still has to be targeted.
+	 * one online CPU still has to be targeted.
 	 */
-	if (!cpumask_intersects(new_value, cpu_active_mask)) {
+	if (!cpumask_intersects(new_value, cpu_online_mask)) {
 		/*
 		 * Special case for empty set - allow the architecture code
 		 * to set default SMP affinity.
@@ -488,9 +488,10 @@ int show_interrupts(struct seq_file *p, void *v)
 	if (!desc || irq_settings_is_hidden(desc))
 		goto outsparse;
 
-	if (desc->kstat_irqs)
+	if (desc->kstat_irqs) {
 		for_each_online_cpu(j)
-			any_count |= *per_cpu_ptr(desc->kstat_irqs, j);
+			any_count |= data_race(*per_cpu_ptr(desc->kstat_irqs, j));
+	}
 
 	if ((!desc->action || irq_desc_is_chained(desc)) && !any_count)
 		goto outsparse;

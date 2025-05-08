@@ -313,7 +313,7 @@ static struct bio *__bio_chain_endio(struct bio *bio)
 {
 	struct bio *parent = bio->bi_private;
 
-	if (bio->bi_status && !parent->bi_status)
+	if (!parent->bi_status)
 		parent->bi_status = bio->bi_status;
 	bio_put(bio);
 	return parent;
@@ -608,13 +608,13 @@ void bio_truncate(struct bio *bio, unsigned new_size)
 void guard_bio_eod(struct bio *bio)
 {
 	sector_t maxsector;
-	struct hd_struct *part;
+	struct block_device *part;
 
 	rcu_read_lock();
 	part = __disk_get_part(bio->bi_disk, bio->bi_partno);
 	if (part)
-		maxsector = part_nr_sects_read(part);
-	else
+		maxsector = bdev_nr_sectors(part);
+	else	
 		maxsector = get_capacity(bio->bi_disk);
 	rcu_read_unlock();
 
@@ -1212,8 +1212,8 @@ void bio_copy_data_iter(struct bio *dst, struct bvec_iter *dst_iter,
 
 		flush_dcache_page(dst_bv.bv_page);
 
-		bio_advance_iter(src, src_iter, bytes);
-		bio_advance_iter(dst, dst_iter, bytes);
+		bio_advance_iter_single(src, src_iter, bytes);
+		bio_advance_iter_single(dst, dst_iter, bytes);
 	}
 }
 EXPORT_SYMBOL(bio_copy_data_iter);

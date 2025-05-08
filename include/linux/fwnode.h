@@ -11,8 +11,6 @@
 
 #include <linux/types.h>
 #include <linux/list.h>
-#include <linux/err.h>
-#include <linux/android_kabi.h>
 
 struct fwnode_operations;
 struct device;
@@ -20,13 +18,9 @@ struct device;
 /*
  * fwnode link flags
  *
- * LINKS_ADDED:	The fwnode has already be parsed to add fwnode links.
- * NOT_DEVICE:	The fwnode will never be populated as a struct device.
- * INITIALIZED: The hardware corresponding to fwnode has been initialized.
+ * LINKS_ADDED: The fwnode has already be parsed to add fwnode links.
  */
 #define FWNODE_FLAG_LINKS_ADDED		BIT(0)
-#define FWNODE_FLAG_NOT_DEVICE		BIT(1)
-#define FWNODE_FLAG_INITIALIZED		BIT(2)
 
 struct fwnode_handle {
 	struct fwnode_handle *secondary;
@@ -35,7 +29,6 @@ struct fwnode_handle {
 	struct list_head suppliers;
 	struct list_head consumers;
 	u8 flags;
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct fwnode_link {
@@ -43,9 +36,6 @@ struct fwnode_link {
 	struct list_head s_hook;
 	struct fwnode_handle *consumer;
 	struct list_head c_hook;
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
-	ANDROID_KABI_RESERVE(3);
 };
 
 /**
@@ -169,20 +159,7 @@ static inline void fwnode_init(struct fwnode_handle *fwnode,
 	INIT_LIST_HEAD(&fwnode->suppliers);
 }
 
-static inline void fwnode_dev_initialized(struct fwnode_handle *fwnode,
-					  bool initialized)
-{
-	if (IS_ERR_OR_NULL(fwnode))
-		return;
-
-	if (initialized)
-		fwnode->flags |= FWNODE_FLAG_INITIALIZED;
-	else
-		fwnode->flags &= ~FWNODE_FLAG_INITIALIZED;
-}
-
 extern u32 fw_devlink_get_flags(void);
-extern bool fw_devlink_is_strict(void);
 int fwnode_link_add(struct fwnode_handle *con, struct fwnode_handle *sup);
 void fwnode_links_purge(struct fwnode_handle *fwnode);
 

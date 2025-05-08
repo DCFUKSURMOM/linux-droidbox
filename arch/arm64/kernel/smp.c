@@ -53,14 +53,9 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ipi.h>
-#undef CREATE_TRACE_POINTS
-#include <trace/hooks/debug.h>
 
 DEFINE_PER_CPU_READ_MOSTLY(int, cpu_number);
 EXPORT_PER_CPU_SYMBOL(cpu_number);
-EXPORT_TRACEPOINT_SYMBOL_GPL(ipi_raise);
-EXPORT_TRACEPOINT_SYMBOL_GPL(ipi_entry);
-EXPORT_TRACEPOINT_SYMBOL_GPL(ipi_exit);
 
 /*
  * as from 2.5, kernels no longer have an init_tasks structure
@@ -356,7 +351,7 @@ void __cpu_die(unsigned int cpu)
 		pr_crit("CPU%u: cpu didn't die\n", cpu);
 		return;
 	}
-	pr_debug("CPU%u: shutdown\n", cpu);
+	pr_notice("CPU%u: shutdown\n", cpu);
 
 	/*
 	 * Now that the dying CPU is beyond the point of no return w.r.t.
@@ -439,10 +434,8 @@ static void __init hyp_mode_check(void)
 			   "CPU: CPUs started in inconsistent modes");
 	else
 		pr_info("CPU: All CPU(s) started at EL1\n");
-	if (IS_ENABLED(CONFIG_KVM) && !is_kernel_in_hyp_mode()) {
+	if (IS_ENABLED(CONFIG_KVM) && !is_kernel_in_hyp_mode())
 		kvm_compute_layout();
-		kvm_apply_hyp_relocations();
-	}
 }
 
 void __init smp_cpus_done(unsigned int max_cpus)
@@ -796,14 +789,13 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 }
 
 static const char *ipi_types[NR_IPI] __tracepoint_string = {
-#define S(x,s)	[x] = s
-	S(IPI_RESCHEDULE, "Rescheduling interrupts"),
-	S(IPI_CALL_FUNC, "Function call interrupts"),
-	S(IPI_CPU_STOP, "CPU stop interrupts"),
-	S(IPI_CPU_CRASH_STOP, "CPU stop (for crash dump) interrupts"),
-	S(IPI_TIMER, "Timer broadcast interrupts"),
-	S(IPI_IRQ_WORK, "IRQ work interrupts"),
-	S(IPI_WAKEUP, "CPU wake-up interrupts"),
+	[IPI_RESCHEDULE]	= "Rescheduling interrupts",
+	[IPI_CALL_FUNC]		= "Function call interrupts",
+	[IPI_CPU_STOP]		= "CPU stop interrupts",
+	[IPI_CPU_CRASH_STOP]	= "CPU stop (for crash dump) interrupts",
+	[IPI_TIMER]		= "Timer broadcast interrupts",
+	[IPI_IRQ_WORK]		= "IRQ work interrupts",
+	[IPI_WAKEUP]		= "CPU wake-up interrupts",
 };
 
 static void smp_cross_call(const struct cpumask *target, unsigned int ipinr);
@@ -815,11 +807,10 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 	unsigned int cpu, i;
 
 	for (i = 0; i < NR_IPI; i++) {
-		unsigned int irq = irq_desc_get_irq(ipi_desc[i]);
 		seq_printf(p, "%*s%u:%s", prec - 1, "IPI", i,
 			   prec >= 4 ? " " : "");
 		for_each_online_cpu(cpu)
-			seq_printf(p, "%10u ", kstat_irqs_cpu(irq, cpu));
+			seq_printf(p, "%10u ", irq_desc_kstat_cpu(ipi_desc[i], cpu));
 		seq_printf(p, "      %s\n", ipi_types[i]);
 	}
 
@@ -912,7 +903,6 @@ static void do_handle_IPI(int ipinr)
 		break;
 
 	case IPI_CPU_STOP:
-		trace_android_vh_ipi_stop_rcuidle(get_irq_regs());
 		local_cpu_stop();
 		break;
 
@@ -1140,15 +1130,3 @@ bool cpus_are_stuck_in_kernel(void)
 
 	return !!cpus_stuck_in_kernel || smp_spin_tables;
 }
-
-int nr_ipi_get(void)
-{
-	return nr_ipi;
-}
-EXPORT_SYMBOL_GPL(nr_ipi_get);
-
-struct irq_desc **ipi_desc_get(void)
-{
-	return ipi_desc;
-}
-EXPORT_SYMBOL_GPL(ipi_desc_get);

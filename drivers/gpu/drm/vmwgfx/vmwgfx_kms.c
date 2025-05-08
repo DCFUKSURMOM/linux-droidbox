@@ -522,8 +522,10 @@ int vmw_du_cursor_plane_atomic_check(struct drm_plane *plane,
 
 
 int vmw_du_crtc_atomic_check(struct drm_crtc *crtc,
-			     struct drm_crtc_state *new_state)
+			     struct drm_atomic_state *state)
 {
+	struct drm_crtc_state *new_state = drm_atomic_get_new_crtc_state(state,
+									 crtc);
 	struct vmw_display_unit *du = vmw_crtc_to_du(new_state->crtc);
 	int connector_mask = drm_connector_mask(&du->connector);
 	bool has_primary = new_state->plane_mask &
@@ -552,13 +554,13 @@ int vmw_du_crtc_atomic_check(struct drm_crtc *crtc,
 
 
 void vmw_du_crtc_atomic_begin(struct drm_crtc *crtc,
-			      struct drm_crtc_state *old_crtc_state)
+			      struct drm_atomic_state *state)
 {
 }
 
 
 void vmw_du_crtc_atomic_flush(struct drm_crtc *crtc,
-			      struct drm_crtc_state *old_crtc_state)
+			      struct drm_atomic_state *state)
 {
 	struct drm_pending_vblank_event *event = crtc->state->event;
 
@@ -918,9 +920,11 @@ static int vmw_kms_new_framebuffer_surface(struct vmw_private *dev_priv,
 	}
 
 	switch (mode_cmd->pixel_format) {
+	case DRM_FORMAT_ABGR8888:
 	case DRM_FORMAT_ARGB8888:
 		format = SVGA3D_A8R8G8B8;
 		break;
+	case DRM_FORMAT_XBGR8888:
 	case DRM_FORMAT_XRGB8888:
 		format = SVGA3D_X8R8G8B8;
 		break;
@@ -1153,6 +1157,8 @@ static int vmw_create_bo_proxy(struct drm_device *dev,
 	switch (mode_cmd->pixel_format) {
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_XBGR8888:
 		format = SVGA3D_X8R8G8B8;
 		bytes_pp = 4;
 		break;
@@ -1229,6 +1235,8 @@ static int vmw_kms_new_framebuffer_bo(struct vmw_private *dev_priv,
 		switch (mode_cmd->pixel_format) {
 		case DRM_FORMAT_XRGB8888:
 		case DRM_FORMAT_ARGB8888:
+		case DRM_FORMAT_XBGR8888:
+		case DRM_FORMAT_ABGR8888:
 			break;
 		case DRM_FORMAT_XRGB1555:
 		case DRM_FORMAT_RGB565:

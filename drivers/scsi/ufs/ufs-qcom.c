@@ -253,16 +253,11 @@ static int ufs_qcom_host_reset(struct ufs_hba *hba)
 {
 	int ret = 0;
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
-	bool reenable_intr = false;
 
 	if (!host->core_reset) {
 		dev_warn(hba->dev, "%s: reset control not set\n", __func__);
 		goto out;
 	}
-
-	reenable_intr = hba->is_irq_enabled;
-	disable_irq(hba->irq);
-	hba->is_irq_enabled = false;
 
 	ret = reset_control_assert(host->core_reset);
 	if (ret) {
@@ -284,11 +279,6 @@ static int ufs_qcom_host_reset(struct ufs_hba *hba)
 				 __func__, ret);
 
 	usleep_range(1000, 1100);
-
-	if (reenable_intr) {
-		enable_irq(hba->irq);
-		hba->is_irq_enabled = true;
-	}
 
 out:
 	return ret;
@@ -578,17 +568,6 @@ out:
 	return err;
 }
 
-static void ufs_qcom_device_reset_ctrl(struct ufs_hba *hba, bool asserted)
-{
-	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
-
-	/* reset gpio is optional */
-	if (!host->device_reset)
-		return;
-
-	gpiod_set_value_cansleep(host->device_reset, asserted);
-}
-
 static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
@@ -602,9 +581,6 @@ static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 		 */
 		ufs_qcom_disable_lane_clks(host);
 		phy_power_off(phy);
-
-		/* reset the connected UFS device during power down */
-		ufs_qcom_device_reset_ctrl(hba, true);
 
 	} else if (!ufs_qcom_is_link_active(hba)) {
 		ufs_qcom_disable_lane_clks(host);
@@ -715,19 +691,8 @@ static int ufs_qcom_pwr_change_notify(struct ufs_hba *hba,
 
 	switch (status) {
 	case PRE_CHANGE:
-		ufs_qcom_cap.tx_lanes = UFS_QCOM_LIMIT_NUM_LANES_TX;
-		ufs_qcom_cap.rx_lanes = UFS_QCOM_LIMIT_NUM_LANES_RX;
-		ufs_qcom_cap.hs_rx_gear = UFS_QCOM_LIMIT_HSGEAR_RX;
-		ufs_qcom_cap.hs_tx_gear = UFS_QCOM_LIMIT_HSGEAR_TX;
-		ufs_qcom_cap.pwm_rx_gear = UFS_QCOM_LIMIT_PWMGEAR_RX;
-		ufs_qcom_cap.pwm_tx_gear = UFS_QCOM_LIMIT_PWMGEAR_TX;
-		ufs_qcom_cap.rx_pwr_pwm = UFS_QCOM_LIMIT_RX_PWR_PWM;
-		ufs_qcom_cap.tx_pwr_pwm = UFS_QCOM_LIMIT_TX_PWR_PWM;
-		ufs_qcom_cap.rx_pwr_hs = UFS_QCOM_LIMIT_RX_PWR_HS;
-		ufs_qcom_cap.tx_pwr_hs = UFS_QCOM_LIMIT_TX_PWR_HS;
+		ufshcd_init_pwr_dev_param(&ufs_qcom_cap);
 		ufs_qcom_cap.hs_rate = UFS_QCOM_LIMIT_HS_RATE;
-		ufs_qcom_cap.desired_working_mode =
-					UFS_QCOM_LIMIT_DESIRED_MODE;
 
 		if (host->hw_ver.major == 0x1) {
 			/*
@@ -758,17 +723,9 @@ static int ufs_qcom_pwr_change_notify(struct ufs_hba *hba,
 			ufs_qcom_dev_ref_clk_ctrl(host, true);
 
 		if (host->hw_ver.major >= 0x4) {
-			if (dev_req_params->gear_tx == UFS_HS_G4) {
-				/* INITIAL ADAPT */
-				ufshcd_dme_set(hba,
-					       UIC_ARG_MIB(PA_TXHSADAPTTYPE),
-					       PA_INITIAL_ADAPT);
-			} else {
-				/* NO ADAPT */
-				ufshcd_dme_set(hba,
-					       UIC_ARG_MIB(PA_TXHSADAPTTYPE),
-					       PA_NO_ADAPT);
-			}
+			ufshcd_dme_configure_adapt(hba,
+						dev_req_params->gear_tx,
+						PA_INITIAL_ADAPT);
 		}
 		break;
 	case POST_CHANGE:
@@ -887,6 +844,7 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	hba->caps |= UFSHCD_CAP_AUTO_BKOPS_SUSPEND;
 	hba->caps |= UFSHCD_CAP_WB_EN;
 	hba->caps |= UFSHCD_CAP_CRYPTO;
+	hba->caps |= UFSHCD_CAP_AGGR_POWER_COLLAPSE;
 
 	if (host->hw_ver.major >= 0x2) {
 		host->caps = UFS_QCOM_CAP_QUNIPRO |
@@ -1001,6 +959,7 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct ufs_qcom_host *host;
 	struct resource *res;
+	struct ufs_clk_info *clki;
 
 	if (strlen(android_boot_dev) && strcmp(android_boot_dev, dev_name(dev)))
 		return -ENODEV;
@@ -1097,6 +1056,11 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 			}
 			host->dev_ref_clk_en_mask = BIT(5);
 		}
+	}
+
+	list_for_each_entry(clki, &hba->clk_list_head, list) {
+		if (!strcmp(clki->name, "core_clk_unipro"))
+			clki->keep_link_active = true;
 	}
 
 	err = ufs_qcom_init_lane_clks(host);
@@ -1230,34 +1194,24 @@ static int ufs_qcom_clk_scale_notify(struct ufs_hba *hba,
 	int err = 0;
 
 	if (status == PRE_CHANGE) {
-		err = ufshcd_uic_hibern8_enter(hba);
-		if (err)
-			return err;
 		if (scale_up)
 			err = ufs_qcom_clk_scale_up_pre_change(hba);
 		else
 			err = ufs_qcom_clk_scale_down_pre_change(hba);
-		if (err)
-			ufshcd_uic_hibern8_exit(hba);
-
 	} else {
 		if (scale_up)
 			err = ufs_qcom_clk_scale_up_post_change(hba);
 		else
 			err = ufs_qcom_clk_scale_down_post_change(hba);
 
-
-		if (err || !dev_req_params) {
-			ufshcd_uic_hibern8_exit(hba);
+		if (err || !dev_req_params)
 			goto out;
-		}
 
 		ufs_qcom_cfg_timers(hba,
 				    dev_req_params->gear_rx,
 				    dev_req_params->pwr_rx,
 				    dev_req_params->hs_rate,
 				    false);
-		ufshcd_uic_hibern8_exit(hba);
 	}
 
 out:
@@ -1467,10 +1421,10 @@ static int ufs_qcom_device_reset(struct ufs_hba *hba)
 	 * The UFS device shall detect reset pulses of 1us, sleep for 10us to
 	 * be on the safe side.
 	 */
-	ufs_qcom_device_reset_ctrl(hba, true);
+	gpiod_set_value_cansleep(host->device_reset, 1);
 	usleep_range(10, 15);
 
-	ufs_qcom_device_reset_ctrl(hba, false);
+	gpiod_set_value_cansleep(host->device_reset, 0);
 	usleep_range(10, 15);
 
 	return 0;

@@ -286,27 +286,6 @@ config DM_CRYPT
 
 	  If unsure, say N.
 
-config DM_DEFAULT_KEY
-	tristate "Default-key target support"
-	depends on BLK_DEV_DM
-	depends on BLK_INLINE_ENCRYPTION
-	# dm-default-key doesn't require -o inlinecrypt, but it does currently
-	# rely on the inline encryption hooks being built into the kernel.
-	depends on FS_ENCRYPTION_INLINE_CRYPT
-	help
-	  This device-mapper target allows you to create a device that
-	  assigns a default encryption key to bios that aren't for the
-	  contents of an encrypted file.
-
-	  This ensures that all blocks on-disk will be encrypted with
-	  some key, without the performance hit of file contents being
-	  encrypted twice when fscrypt (File-Based Encryption) is used.
-
-	  It is only appropriate to use dm-default-key when key
-	  configuration is tightly controlled, like it is in Android,
-	  such that all fscrypt keys are at least as hard to compromise
-	  as the default key.
-
 config DM_SNAPSHOT
        tristate "Snapshot target"
        depends on BLK_DEV_DM
@@ -484,6 +463,15 @@ config DM_MULTIPATH_HST
 
 	  If unsure, say N.
 
+config DM_MULTIPATH_IOA
+	tristate "I/O Path Selector based on CPU submission"
+	depends on DM_MULTIPATH
+	help
+	  This path selector selects the path based on the CPU the IO is
+	  executed on and the CPU to path mapping setup at path addition time.
+
+	  If unsure, say N.
+
 config DM_DELAY
 	tristate "I/O delaying target"
 	depends on BLK_DEV_DM
@@ -551,10 +539,21 @@ config DM_VERITY_VERIFY_ROOTHASH_SIG
 	bool "Verity data device root hash signature verification support"
 	depends on DM_VERITY
 	select SYSTEM_DATA_VERIFICATION
-	  help
+	help
 	  Add ability for dm-verity device to be validated if the
 	  pre-generated tree of cryptographic checksums passed has a pkcs#7
 	  signature file that can validate the roothash of the tree.
+
+	  By default, rely on the builtin trusted keyring.
+
+	  If unsure, say N.
+
+config DM_VERITY_VERIFY_ROOTHASH_SIG_SECONDARY_KEYRING
+	bool "Verity data device root hash signature verification with secondary keyring"
+	depends on DM_VERITY_VERIFY_ROOTHASH_SIG
+	depends on SECONDARY_TRUSTED_KEYRING
+	help
+	  Rely on the secondary trusted keyring to verify dm-verity signatures.
 
 	  If unsure, say N.
 
@@ -637,32 +636,6 @@ config DM_ZONED
 
 	  To compile this code as a module, choose M here: the module will
 	  be called dm-zoned.
-
-	  If unsure, say N.
-
-config DM_BOW
-	tristate "Backup block device"
-	depends on BLK_DEV_DM
-	select DM_BUFIO
-	help
-	  This device-mapper target takes a device and keeps a log of all
-	  changes using free blocks identified by issuing a trim command.
-	  This can then be restored by running a command line utility,
-	  or committed by simply replacing the target.
-
-	  If unsure, say N.
-
-config DM_USER
-	tristate "Block device in userspace"
-	depends on BLK_DEV_DM
-	default y
-	help
-	  This device-mapper target allows a userspace daemon to provide the
-	  contents of a block device.  See
-	  <file:Documentation/block/dm-user.rst> for more information.
-
-	  To compile this code as a module, choose M here: the module will be
-	  called dm-user.
 
 	  If unsure, say N.
 

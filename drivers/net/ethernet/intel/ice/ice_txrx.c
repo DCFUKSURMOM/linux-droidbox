@@ -483,7 +483,7 @@ int ice_setup_rx_ring(struct ice_ring *rx_ring)
 	if (rx_ring->vsi->type == ICE_VSI_PF &&
 	    !xdp_rxq_info_is_reg(&rx_ring->xdp_rxq))
 		if (xdp_rxq_info_reg(&rx_ring->xdp_rxq, rx_ring->netdev,
-				     rx_ring->q_index))
+				     rx_ring->q_index, rx_ring->q_vector->napi.napi_id))
 			goto err;
 	return 0;
 
@@ -2421,7 +2421,7 @@ ice_xmit_frame_ring(struct sk_buff *skb, struct ice_ring *tx_ring)
 	/* allow CONTROL frames egress from main VSI if FW LLDP disabled */
 	if (unlikely(skb->priority == TC_PRIO_CONTROL &&
 		     vsi->type == ICE_VSI_PF &&
-		     vsi->port_info->qos_cfg.is_sw_lldp))
+		     vsi->port_info->is_sw_lldp))
 		offload.cd_qw1 |= (u64)(ICE_TX_DESC_DTYPE_CTX |
 					ICE_TX_CTX_DESC_SWTCH_UPLINK <<
 					ICE_TXD_CTX_QW1_CMD_S);

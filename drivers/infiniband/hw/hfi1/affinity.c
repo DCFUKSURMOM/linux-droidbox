@@ -632,10 +632,21 @@ static void _dev_comp_vect_cpu_mask_clean_up(struct hfi1_devdata *dd,
  */
 int hfi1_dev_affinity_init(struct hfi1_devdata *dd)
 {
+	int node = pcibus_to_node(dd->pcidev->bus);
 	struct hfi1_affinity_node *entry;
 	const struct cpumask *local_mask;
 	int curr_cpu, possible, i, ret;
 	bool new_entry = false;
+
+	/*
+	 * If the BIOS does not have the NUMA node information set, select
+	 * NUMA 0 so we get consistent performance.
+	 */
+	if (node < 0) {
+		dd_dev_err(dd, "Invalid PCI NUMA node. Performance may be affected\n");
+		node = 0;
+	}
+	dd->node = node;
 
 	local_mask = cpumask_of_node(dd->node);
 	if (cpumask_first(local_mask) >= nr_cpu_ids)
@@ -649,7 +660,7 @@ int hfi1_dev_affinity_init(struct hfi1_devdata *dd)
 	 * create an entry in the global affinity structure and initialize it.
 	 */
 	if (!entry) {
-		entry = node_affinity_allocate(dd->node);
+		entry = node_affinity_allocate(node);
 		if (!entry) {
 			dd_dev_err(dd,
 				   "Unable to allocate global affinity node\n");
@@ -740,7 +751,6 @@ int hfi1_dev_affinity_init(struct hfi1_devdata *dd)
 	if (new_entry)
 		node_affinity_add_tail(entry);
 
-	dd->affinity_entry = entry;
 	mutex_unlock(&node_affinity.lock);
 
 	return 0;
@@ -756,9 +766,10 @@ void hfi1_dev_affinity_clean_up(struct hfi1_devdata *dd)
 {
 	struct hfi1_affinity_node *entry;
 
+	if (dd->node < 0)
+		return;
+
 	mutex_lock(&node_affinity.lock);
-	if (!dd->affinity_entry)
-		goto unlock;
 	entry = node_affinity_lookup(dd->node);
 	if (!entry)
 		goto unlock;
@@ -769,8 +780,8 @@ void hfi1_dev_affinity_clean_up(struct hfi1_devdata *dd)
 	 */
 	_dev_comp_vect_cpu_mask_clean_up(dd, entry);
 unlock:
-	dd->affinity_entry = NULL;
 	mutex_unlock(&node_affinity.lock);
+	dd->node = NUMA_NO_NODE;
 }
 
 /*

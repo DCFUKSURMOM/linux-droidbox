@@ -158,6 +158,7 @@ int pm8001_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 	int rc = 0, phy_id = sas_phy->id;
 	struct pm8001_hba_info *pm8001_ha = NULL;
 	struct sas_phy_linkrates *rates;
+	struct sas_ha_struct *sas_ha;
 	struct pm8001_phy *phy;
 	DECLARE_COMPLETION_ONSTACK(completion);
 	unsigned long flags;
@@ -206,16 +207,18 @@ int pm8001_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 		if (pm8001_ha->chip_id != chip_8001) {
 			if (pm8001_ha->phy[phy_id].phy_state ==
 				PHY_STATE_LINK_UP_SPCV) {
+				sas_ha = pm8001_ha->sas;
 				sas_phy_disconnected(&phy->sas_phy);
-				sas_notify_phy_event(&phy->sas_phy,
+				sas_ha->notify_phy_event(&phy->sas_phy,
 					PHYE_LOSS_OF_SIGNAL);
 				phy->phy_attached = 0;
 			}
 		} else {
 			if (pm8001_ha->phy[phy_id].phy_state ==
 				PHY_STATE_LINK_UP_SPC) {
+				sas_ha = pm8001_ha->sas;
 				sas_phy_disconnected(&phy->sas_phy);
-				sas_notify_phy_event(&phy->sas_phy,
+				sas_ha->notify_phy_event(&phy->sas_phy,
 					PHYE_LOSS_OF_SIGNAL);
 				phy->phy_attached = 0;
 			}
@@ -904,7 +907,7 @@ static int pm8001_issue_ssp_tmf(struct domain_device *dev,
 	if (!(dev->tproto & SAS_PROTOCOL_SSP))
 		return TMF_RESP_FUNC_ESUPP;
 
-	strncpy((u8 *)&ssp_task.LUN, lun, 8);
+	memcpy((u8 *)&ssp_task.LUN, lun, 8);
 	return pm8001_exec_internal_tmf_task(dev, &ssp_task, sizeof(ssp_task),
 		tmf);
 }
@@ -1188,7 +1191,7 @@ int pm8001_abort_task(struct sas_task *task)
 	phy_id = pm8001_dev->attached_phy;
 	ret = pm8001_find_tag(task, &tag);
 	if (ret == 0) {
-		pm8001_printk("no tag for task:%p\n", task);
+		pm8001_info(pm8001_ha, "no tag for task:%p\n", task);
 		return TMF_RESP_FUNC_FAILED;
 	}
 	spin_lock_irqsave(&task->task_state_lock, flags);
@@ -1310,7 +1313,7 @@ out:
 		task->slow_task = NULL;
 	spin_unlock_irqrestore(&task->task_state_lock, flags);
 	if (rc != TMF_RESP_FUNC_COMPLETE)
-		pm8001_printk("rc= %d\n", rc);
+		pm8001_info(pm8001_ha, "rc= %d\n", rc);
 	return rc;
 }
 

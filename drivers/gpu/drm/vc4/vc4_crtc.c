@@ -210,7 +210,6 @@ static u32 vc4_get_fifo_full_level(struct vc4_crtc *vc4_crtc, u32 format)
 {
 	const struct vc4_crtc_data *crtc_data = vc4_crtc_to_vc4_crtc_data(vc4_crtc);
 	const struct vc4_pv_data *pv_data = vc4_crtc_to_vc4_pv_data(vc4_crtc);
-	struct vc4_dev *vc4 = to_vc4_dev(vc4_crtc->base.dev);
 	u32 fifo_len_bytes = pv_data->fifo_depth;
 
 	/*
@@ -238,22 +237,6 @@ static u32 vc4_get_fifo_full_level(struct vc4_crtc *vc4_crtc, u32 format)
 		 */
 		if (crtc_data->hvs_output == 5)
 			return 32;
-
-		/*
-		 * It looks like in some situations, we will overflow
-		 * the PixelValve FIFO (with the bit 10 of PV stat being
-		 * set) and stall the HVS / PV, eventually resulting in
-		 * a page flip timeout.
-		 *
-		 * Displaying the video overlay during a playback with
-		 * Kodi on an RPi3 seems to be a great solution with a
-		 * failure rate around 50%.
-		 *
-		 * Removing 1 from the FIFO full level however
-		 * seems to completely remove that issue.
-		 */
-		if (!vc4->hvs->hvs5)
-			return fifo_len_bytes - 3 * HVS_FIFO_LATENCY_PIX - 1;
 
 		return fifo_len_bytes - 3 * HVS_FIFO_LATENCY_PIX;
 	}
@@ -489,8 +472,10 @@ int vc4_crtc_disable_at_boot(struct drm_crtc *crtc)
 }
 
 static void vc4_crtc_atomic_disable(struct drm_crtc *crtc,
-				    struct drm_crtc_state *old_state)
+				    struct drm_atomic_state *state)
 {
+	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
+									 crtc);
 	struct vc4_crtc_state *old_vc4_state = to_vc4_crtc_state(old_state);
 	struct drm_device *dev = crtc->dev;
 
@@ -516,8 +501,10 @@ static void vc4_crtc_atomic_disable(struct drm_crtc *crtc,
 }
 
 static void vc4_crtc_atomic_enable(struct drm_crtc *crtc,
-				   struct drm_crtc_state *old_state)
+				   struct drm_atomic_state *state)
 {
+	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
+									 crtc);
 	struct drm_device *dev = crtc->dev;
 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
 	struct drm_encoder *encoder = vc4_get_crtc_encoder(crtc);
@@ -597,18 +584,21 @@ void vc4_crtc_get_margins(struct drm_crtc_state *state,
 }
 
 static int vc4_crtc_atomic_check(struct drm_crtc *crtc,
-				 struct drm_crtc_state *state)
+				 struct drm_atomic_state *state)
 {
-	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(state);
+	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state,
+									  crtc);
+	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc_state);
 	struct drm_connector *conn;
 	struct drm_connector_state *conn_state;
 	int ret, i;
 
-	ret = vc4_hvs_atomic_check(crtc, state);
+	ret = vc4_hvs_atomic_check(crtc, crtc_state);
 	if (ret)
 		return ret;
 
-	for_each_new_connector_in_state(state->state, conn, conn_state, i) {
+	for_each_new_connector_in_state(state, conn, conn_state,
+					i) {
 		if (conn_state->crtc != crtc)
 			continue;
 

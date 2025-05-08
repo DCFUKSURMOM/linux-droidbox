@@ -1049,20 +1049,13 @@ static int axienet_open(struct net_device *ndev)
 
 	dev_dbg(&ndev->dev, "axienet_open()\n");
 
-	/* Disable the MDIO interface till Axi Ethernet Reset is completed.
-	 * When we do an Axi Ethernet reset, it resets the complete core
-	 * including the MDIO. MDIO must be disabled before resetting
-	 * and re-enabled afterwards.
+	/* When we do an Axi Ethernet reset, it resets the complete core
+	 * including the MDIO. MDIO must be disabled before resetting.
 	 * Hold MDIO bus lock to avoid MDIO accesses during the reset.
 	 */
 	mutex_lock(&lp->mii_bus->mdio_lock);
-	axienet_mdio_disable(lp);
 	ret = axienet_device_reset(ndev);
-	if (ret == 0)
-		ret = axienet_mdio_enable(lp);
 	mutex_unlock(&lp->mii_bus->mdio_lock);
-	if (ret < 0)
-		return ret;
 
 	ret = phylink_of_phy_connect(lp->phylink, lp->dev->of_node, 0);
 	if (ret) {
@@ -1156,9 +1149,7 @@ static int axienet_stop(struct net_device *ndev)
 
 	/* Do a reset to ensure DMA is really stopped */
 	mutex_lock(&lp->mii_bus->mdio_lock);
-	axienet_mdio_disable(lp);
 	__axienet_device_reset(lp);
-	axienet_mdio_enable(lp);
 	mutex_unlock(&lp->mii_bus->mdio_lock);
 
 	cancel_work_sync(&lp->dma_err_task);
@@ -1669,16 +1660,12 @@ static void axienet_dma_err_handler(struct work_struct *work)
 
 	axienet_setoptions(ndev, lp->options &
 			   ~(XAE_OPTION_TXEN | XAE_OPTION_RXEN));
-	/* Disable the MDIO interface till Axi Ethernet Reset is completed.
-	 * When we do an Axi Ethernet reset, it resets the complete core
-	 * including the MDIO. MDIO must be disabled before resetting
-	 * and re-enabled afterwards.
+	/* When we do an Axi Ethernet reset, it resets the complete core
+	 * including the MDIO. MDIO must be disabled before resetting.
 	 * Hold MDIO bus lock to avoid MDIO accesses during the reset.
 	 */
 	mutex_lock(&lp->mii_bus->mdio_lock);
-	axienet_mdio_disable(lp);
 	__axienet_device_reset(lp);
-	axienet_mdio_enable(lp);
 	mutex_unlock(&lp->mii_bus->mdio_lock);
 
 	for (i = 0; i < lp->tx_bd_num; i++) {
@@ -1830,25 +1817,13 @@ static int axienet_probe(struct platform_device *pdev)
 	lp->options = XAE_OPTION_DEFAULTS;
 	lp->rx_bd_num = RX_BD_NUM_DEFAULT;
 	lp->tx_bd_num = TX_BD_NUM_DEFAULT;
-
-	lp->clk = devm_clk_get_optional(&pdev->dev, NULL);
-	if (IS_ERR(lp->clk)) {
-		ret = PTR_ERR(lp->clk);
-		goto free_netdev;
-	}
-	ret = clk_prepare_enable(lp->clk);
-	if (ret) {
-		dev_err(&pdev->dev, "Unable to enable clock: %d\n", ret);
-		goto free_netdev;
-	}
-
 	/* Map device registers */
 	ethres = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	lp->regs = devm_ioremap_resource(&pdev->dev, ethres);
 	if (IS_ERR(lp->regs)) {
 		dev_err(&pdev->dev, "could not map Axi Ethernet regs.\n");
 		ret = PTR_ERR(lp->regs);
-		goto cleanup_clk;
+		goto free_netdev;
 	}
 	lp->regs_start = ethres->start;
 
@@ -1923,12 +1898,12 @@ static int axienet_probe(struct platform_device *pdev)
 			break;
 		default:
 			ret = -EINVAL;
-			goto cleanup_clk;
+			goto free_netdev;
 		}
 	} else {
 		ret = of_get_phy_mode(pdev->dev.of_node, &lp->phy_mode);
 		if (ret)
-			goto cleanup_clk;
+			goto free_netdev;
 	}
 
 	/* Find the DMA node, map the DMA registers, and decode the DMA IRQs */
@@ -1941,7 +1916,7 @@ static int axienet_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev,
 				"unable to get DMA resource\n");
 			of_node_put(np);
-			goto cleanup_clk;
+			goto free_netdev;
 		}
 		lp->dma_regs = devm_ioremap_resource(&pdev->dev,
 						     &dmares);
@@ -1961,12 +1936,12 @@ static int axienet_probe(struct platform_device *pdev)
 	if (IS_ERR(lp->dma_regs)) {
 		dev_err(&pdev->dev, "could not map DMA regs\n");
 		ret = PTR_ERR(lp->dma_regs);
-		goto cleanup_clk;
+		goto free_netdev;
 	}
 	if ((lp->rx_irq <= 0) || (lp->tx_irq <= 0)) {
 		dev_err(&pdev->dev, "could not determine irqs\n");
 		ret = -ENOMEM;
-		goto cleanup_clk;
+		goto free_netdev;
 	}
 
 	/* Autodetect the need for 64-bit DMA pointers.
@@ -1996,7 +1971,7 @@ static int axienet_probe(struct platform_device *pdev)
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(addr_width));
 	if (ret) {
 		dev_err(&pdev->dev, "No suitable DMA available\n");
-		goto cleanup_clk;
+		goto free_netdev;
 	}
 
 	/* Check for Ethernet core IRQ (optional) */
@@ -2017,6 +1992,20 @@ static int axienet_probe(struct platform_device *pdev)
 
 	lp->phy_node = of_parse_phandle(pdev->dev.of_node, "phy-handle", 0);
 	if (lp->phy_node) {
+		lp->clk = devm_clk_get(&pdev->dev, NULL);
+		if (IS_ERR(lp->clk)) {
+			dev_warn(&pdev->dev, "Failed to get clock: %ld\n",
+				 PTR_ERR(lp->clk));
+			lp->clk = NULL;
+		} else {
+			ret = clk_prepare_enable(lp->clk);
+			if (ret) {
+				dev_err(&pdev->dev, "Unable to enable clock: %d\n",
+					ret);
+				goto free_netdev;
+			}
+		}
+
 		ret = axienet_mdio_setup(lp);
 		if (ret)
 			dev_warn(&pdev->dev,
@@ -2027,12 +2016,12 @@ static int axienet_probe(struct platform_device *pdev)
 		if (!lp->phy_node) {
 			dev_err(&pdev->dev, "phy-handle required for 1000BaseX/SGMII\n");
 			ret = -EINVAL;
-			goto cleanup_mdio;
+			goto free_netdev;
 		}
 		lp->pcs_phy = of_mdio_find_device(lp->phy_node);
 		if (!lp->pcs_phy) {
 			ret = -EPROBE_DEFER;
-			goto cleanup_mdio;
+			goto free_netdev;
 		}
 		lp->phylink_config.pcs_poll = true;
 	}
@@ -2046,29 +2035,16 @@ static int axienet_probe(struct platform_device *pdev)
 	if (IS_ERR(lp->phylink)) {
 		ret = PTR_ERR(lp->phylink);
 		dev_err(&pdev->dev, "phylink_create error (%i)\n", ret);
-		goto cleanup_mdio;
+		goto free_netdev;
 	}
 
 	ret = register_netdev(lp->ndev);
 	if (ret) {
 		dev_err(lp->dev, "register_netdev() error (%i)\n", ret);
-		goto cleanup_phylink;
+		goto free_netdev;
 	}
 
 	return 0;
-
-cleanup_phylink:
-	phylink_destroy(lp->phylink);
-
-cleanup_mdio:
-	if (lp->pcs_phy)
-		put_device(&lp->pcs_phy->dev);
-	if (lp->mii_bus)
-		axienet_mdio_teardown(lp);
-	of_node_put(lp->phy_node);
-
-cleanup_clk:
-	clk_disable_unprepare(lp->clk);
 
 free_netdev:
 	free_netdev(ndev);

@@ -53,11 +53,6 @@
 
 #include "workqueue_internal.h"
 
-#include <trace/hooks/wqlockup.h>
-#include <trace/hooks/workqueue.h>
-/* events/workqueue.h uses default TRACE_INCLUDE_PATH */
-#undef TRACE_INCLUDE_PATH
-
 enum {
 	/*
 	 * worker_pool flags
@@ -365,9 +360,6 @@ static void show_pwq(struct pool_workqueue *pwq);
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/workqueue.h>
-
-EXPORT_TRACEPOINT_SYMBOL_GPL(workqueue_execute_start);
-EXPORT_TRACEPOINT_SYMBOL_GPL(workqueue_execute_end);
 
 #define assert_rcu_or_pool_mutex()					\
 	RCU_LOCKDEP_WARN(!rcu_read_lock_held() &&			\
@@ -1420,6 +1412,7 @@ static void __queue_work(int cpu, struct workqueue_struct *wq,
 	 */
 	lockdep_assert_irqs_disabled();
 
+	debug_work_activate(work);
 
 	/* if draining, only works from the same workqueue are allowed */
 	if (unlikely(wq->flags & __WQ_DRAINING) &&
@@ -1501,7 +1494,6 @@ retry:
 		worklist = &pwq->delayed_works;
 	}
 
-	debug_work_activate(work);
 	insert_work(pwq, work, worklist, work_flags);
 
 out:
@@ -1638,14 +1630,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 	struct work_struct *work = &dwork->work;
 
 	WARN_ON_ONCE(!wq);
-	/*
-	 * With CFI, timer->function can point to a jump table entry in a module,
-	 * which fails the comparison. Disable the warning if CFI and modules are
-	 * both enabled.
-	 */
-	if (!IS_ENABLED(CONFIG_CFI_CLANG) || !IS_ENABLED(CONFIG_MODULES))
-		WARN_ON_ONCE(timer->function != delayed_work_timer_fn);
-
+	WARN_ON_ONCE(timer->function != delayed_work_timer_fn);
 	WARN_ON_ONCE(timer_pending(timer));
 	WARN_ON_ONCE(!list_empty(&work->entry));
 
@@ -1870,6 +1855,8 @@ static void worker_attach_to_pool(struct worker *worker,
 	 */
 	if (pool->flags & POOL_DISASSOCIATED)
 		worker->flags |= WORKER_UNBOUND;
+	else
+		kthread_set_per_cpu(worker->task, pool->cpu);
 
 	if (worker->rescue_wq)
 		set_cpus_allowed_ptr(worker->task, pool->attrs->cpumask);
@@ -1895,6 +1882,7 @@ static void worker_detach_from_pool(struct worker *worker)
 
 	mutex_lock(&wq_pool_attach_mutex);
 
+	kthread_set_per_cpu(worker->task, -1);
 	list_del(&worker->node);
 	worker->pool = NULL;
 
@@ -1949,7 +1937,6 @@ static struct worker *create_worker(struct worker_pool *pool)
 	if (IS_ERR(worker->task))
 		goto fail;
 
-	trace_android_vh_create_worker(worker, pool->attrs);
 	set_user_nice(worker->task, pool->attrs->nice);
 	kthread_bind_mask(worker->task, pool->attrs->cpumask);
 
@@ -4931,6 +4918,12 @@ static void unbind_workers(int cpu)
 		pool->flags |= POOL_DISASSOCIATED;
 
 		raw_spin_unlock_irq(&pool->lock);
+
+		for_each_pool_worker(worker, pool) {
+			kthread_set_per_cpu(worker->task, -1);
+			WARN_ON_ONCE(set_cpus_allowed_ptr(worker->task, cpu_possible_mask) < 0);
+		}
+
 		mutex_unlock(&wq_pool_attach_mutex);
 
 		/*
@@ -4981,9 +4974,11 @@ static void rebind_workers(struct worker_pool *pool)
 	 * of all workers first and then clear UNBOUND.  As we're called
 	 * from CPU_ONLINE, the following shouldn't fail.
 	 */
-	for_each_pool_worker(worker, pool)
+	for_each_pool_worker(worker, pool) {
+		kthread_set_per_cpu(worker->task, pool->cpu);
 		WARN_ON_ONCE(set_cpus_allowed_ptr(worker->task,
 						  pool->attrs->cpumask) < 0);
+	}
 
 	raw_spin_lock_irq(&pool->lock);
 
@@ -5815,7 +5810,6 @@ static void wq_watchdog_timer_fn(struct timer_list *unused)
 			pr_cont_pool_info(pool);
 			pr_cont(" stuck for %us!\n",
 				jiffies_to_msecs(jiffies - pool_ts) / 1000);
-			trace_android_vh_wq_lockup_pool(pool->cpu, pool_ts);
 		}
 	}
 

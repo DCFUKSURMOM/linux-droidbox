@@ -246,12 +246,13 @@ static bool hw_support_mmap(struct snd_pcm_substream *substream)
 	if (!(substream->runtime->hw.info & SNDRV_PCM_INFO_MMAP))
 		return false;
 
-	if (substream->ops->mmap ||
+#if defined(CONFIG_MMU) || !defined(CONFIG_HAS_DMA)
+	if (!substream->ops->mmap &&
 	    (substream->dma_buffer.dev.type != SNDRV_DMA_TYPE_DEV &&
 	     substream->dma_buffer.dev.type != SNDRV_DMA_TYPE_DEV_UC))
-		return true;
-
-	return dma_can_mmap(substream->dma_buffer.dev.dev);
+		return false;
+#endif
+	return true;
 }
 
 static int constrain_mask_params(struct snd_pcm_substream *substream,
@@ -382,8 +383,8 @@ retry:
 			continue;
 
 		/*
-		 * The 'deps' array includes maximum three dependencies
-		 * to SNDRV_PCM_HW_PARAM_XXXs for this rule. The fourth
+		 * The 'deps' array includes maximum four dependencies
+		 * to SNDRV_PCM_HW_PARAM_XXXs for this rule. The fifth
 		 * member of this array is a sentinel and should be
 		 * negative value.
 		 *
@@ -583,13 +584,13 @@ static inline void snd_pcm_timer_notify(struct snd_pcm_substream *substream,
 #endif
 }
 
-void snd_pcm_sync_stop(struct snd_pcm_substream *substream, bool sync_irq)
+static void snd_pcm_sync_stop(struct snd_pcm_substream *substream)
 {
-	if (substream->runtime && substream->runtime->stop_operating) {
+	if (substream->runtime->stop_operating) {
 		substream->runtime->stop_operating = false;
-		if (substream->ops && substream->ops->sync_stop)
+		if (substream->ops->sync_stop)
 			substream->ops->sync_stop(substream);
-		else if (sync_irq && substream->pcm->card->sync_irq > 0)
+		else if (substream->pcm->card->sync_irq > 0)
 			synchronize_irq(substream->pcm->card->sync_irq);
 	}
 }
@@ -686,7 +687,7 @@ static int snd_pcm_hw_params(struct snd_pcm_substream *substream,
 		if (atomic_read(&substream->mmap_count))
 			return -EBADFD;
 
-	snd_pcm_sync_stop(substream, true);
+	snd_pcm_sync_stop(substream);
 
 	params->rmask = ~0U;
 	err = snd_pcm_hw_refine(substream, params);
@@ -809,7 +810,7 @@ static int do_hw_free(struct snd_pcm_substream *substream)
 {
 	int result = 0;
 
-	snd_pcm_sync_stop(substream, true);
+	snd_pcm_sync_stop(substream);
 	if (substream->ops->hw_free)
 		result = substream->ops->hw_free(substream);
 	if (substream->managed_buffer_alloc)
@@ -1421,10 +1422,8 @@ static int snd_pcm_do_stop(struct snd_pcm_substream *substream,
 			   snd_pcm_state_t state)
 {
 	if (substream->runtime->trigger_master == substream &&
-	    snd_pcm_running(substream)) {
+	    snd_pcm_running(substream))
 		substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_STOP);
-		substream->runtime->stop_operating = true;
-	}
 	return 0; /* unconditonally stop all substreams */
 }
 
@@ -1437,6 +1436,7 @@ static void snd_pcm_post_stop(struct snd_pcm_substream *substream,
 		runtime->status->state = state;
 		snd_pcm_timer_notify(substream, SNDRV_TIMER_EVENT_MSTOP);
 	}
+	runtime->stop_operating = true;
 	wake_up(&runtime->sleep);
 	wake_up(&runtime->tsleep);
 }
@@ -1616,7 +1616,6 @@ static int snd_pcm_do_suspend(struct snd_pcm_substream *substream,
 	if (! snd_pcm_running(substream))
 		return 0;
 	substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_SUSPEND);
-	runtime->stop_operating = true;
 	return 0; /* suspend unconditionally */
 }
 
@@ -1693,12 +1692,6 @@ int snd_pcm_suspend_all(struct snd_pcm *pcm)
 				return err;
 		}
 	}
-
-	for (stream = 0; stream < 2; stream++)
-		for (substream = pcm->streams[stream].substream;
-		     substream; substream = substream->next)
-			snd_pcm_sync_stop(substream, false);
-
 	return 0;
 }
 EXPORT_SYMBOL(snd_pcm_suspend_all);
@@ -1744,6 +1737,7 @@ static void snd_pcm_post_resume(struct snd_pcm_substream *substream,
 	snd_pcm_trigger_tstamp(substream);
 	runtime->status->state = runtime->status->suspended_state;
 	snd_pcm_timer_notify(substream, SNDRV_TIMER_EVENT_MRESUME);
+	snd_pcm_sync_stop(substream);
 }
 
 static const struct action_ops snd_pcm_action_resume = {
@@ -1873,7 +1867,7 @@ static int snd_pcm_do_prepare(struct snd_pcm_substream *substream,
 			      snd_pcm_state_t state)
 {
 	int err;
-	snd_pcm_sync_stop(substream, true);
+	snd_pcm_sync_stop(substream);
 	err = substream->ops->prepare(substream);
 	if (err < 0)
 		return err;

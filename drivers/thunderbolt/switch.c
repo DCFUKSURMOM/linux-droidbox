@@ -503,12 +503,13 @@ static void tb_dump_port(struct tb *tb, struct tb_regs_port_header *port)
 
 /**
  * tb_port_state() - get connectedness state of a port
+ * @port: the port to check
  *
  * The port must have a TB_CAP_PHY (i.e. it should be a real port).
  *
  * Return: Returns an enum tb_port_state on success or an error code on failure.
  */
-static int tb_port_state(struct tb_port *port)
+int tb_port_state(struct tb_port *port)
 {
 	struct tb_cap_phy phy;
 	int res;
@@ -761,6 +762,12 @@ static int tb_init_port(struct tb_port *port)
 
 	tb_dump_port(port->sw->tb, &port->config);
 
+	/* Control port does not need HopID allocation */
+	if (port->port) {
+		ida_init(&port->in_hopids);
+		ida_init(&port->out_hopids);
+	}
+
 	INIT_LIST_HEAD(&port->list);
 	return 0;
 
@@ -926,7 +933,14 @@ int tb_port_get_link_speed(struct tb_port *port)
 	return speed == LANE_ADP_CS_1_CURRENT_SPEED_GEN3 ? 20 : 10;
 }
 
-static int tb_port_get_link_width(struct tb_port *port)
+/**
+ * tb_port_get_link_width() - Get current link width
+ * @port: Port to check (USB4 or CIO)
+ *
+ * Returns link width. Return values can be 1 (Single-Lane), 2 (Dual-Lane)
+ * or negative errno in case of failure.
+ */
+int tb_port_get_link_width(struct tb_port *port)
 {
 	u32 val;
 	int ret;
@@ -995,7 +1009,16 @@ static int tb_port_set_link_width(struct tb_port *port, unsigned int width)
 			     port->cap_phy + LANE_ADP_CS_1, 1);
 }
 
-static int tb_port_lane_bonding_enable(struct tb_port *port)
+/**
+ * tb_port_lane_bonding_enable() - Enable bonding on port
+ * @port: port to enable
+ *
+ * Enable bonding by setting the link width of the port and the
+ * other port in case of dual link port.
+ *
+ * Return: %0 in case of success and negative errno in case of error
+ */
+int tb_port_lane_bonding_enable(struct tb_port *port)
 {
 	int ret;
 
@@ -1025,7 +1048,15 @@ static int tb_port_lane_bonding_enable(struct tb_port *port)
 	return 0;
 }
 
-static void tb_port_lane_bonding_disable(struct tb_port *port)
+/**
+ * tb_port_lane_bonding_disable() - Disable bonding on port
+ * @port: port to disable
+ *
+ * Disable bonding by setting the link width of the port and the
+ * other port in case of dual link port.
+ *
+ */
+void tb_port_lane_bonding_disable(struct tb_port *port)
 {
 	port->dual_link_port->bonded = false;
 	port->bonded = false;
@@ -1758,8 +1789,10 @@ static void tb_switch_release(struct device *dev)
 	dma_port_free(sw->dma_port);
 
 	tb_switch_for_each_port(sw, port) {
-		ida_destroy(&port->in_hopids);
-		ida_destroy(&port->out_hopids);
+		if (!port->disabled) {
+			ida_destroy(&port->in_hopids);
+			ida_destroy(&port->out_hopids);
+		}
 	}
 
 	kfree(sw->uuid);
@@ -1939,12 +1972,6 @@ struct tb_switch *tb_switch_alloc(struct tb *tb, struct device *parent,
 		/* minimum setup for tb_find_cap and tb_drom_read to work */
 		sw->ports[i].sw = sw;
 		sw->ports[i].port = i;
-
-		/* Control port does not need HopID allocation */
-		if (i) {
-			ida_init(&sw->ports[i].in_hopids);
-			ida_init(&sw->ports[i].out_hopids);
-		}
 	}
 
 	ret = tb_switch_find_vse_cap(sw, TB_VSE_CAP_PLUG_EVENTS);
@@ -2133,6 +2160,7 @@ static int tb_switch_add_dma_port(struct tb_switch *sw)
 
 		fallthrough;
 	case 3:
+	case 4:
 		ret = tb_switch_set_uuid(sw);
 		if (ret)
 			return ret;
@@ -2148,15 +2176,28 @@ static int tb_switch_add_dma_port(struct tb_switch *sw)
 		break;
 	}
 
+	if (sw->no_nvm_upgrade)
+		return 0;
+
+	if (tb_switch_is_usb4(sw)) {
+		ret = usb4_switch_nvm_authenticate_status(sw, &status);
+		if (ret)
+			return ret;
+
+		if (status) {
+			tb_sw_info(sw, "switch flash authentication failed\n");
+			nvm_set_auth_status(sw, status);
+		}
+
+		return 0;
+	}
+
 	/* Root switch DMA port requires running firmware */
 	if (!tb_route(sw) && !tb_switch_is_icm(sw))
 		return 0;
 
 	sw->dma_port = dma_port_alloc(sw);
 	if (!sw->dma_port)
-		return 0;
-
-	if (sw->no_nvm_upgrade)
 		return 0;
 
 	/*

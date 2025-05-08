@@ -2227,7 +2227,7 @@ static int wl12xx_init_vif_data(struct wl1271 *wl, struct ieee80211_vif *vif)
 	switch (ieee80211_vif_type_p2p(vif)) {
 	case NL80211_IFTYPE_P2P_CLIENT:
 		wlvif->p2p = 1;
-		/* fall-through */
+		fallthrough;
 	case NL80211_IFTYPE_STATION:
 	case NL80211_IFTYPE_P2P_DEVICE:
 		wlvif->bss_type = BSS_TYPE_STA_BSS;
@@ -2237,7 +2237,7 @@ static int wl12xx_init_vif_data(struct wl1271 *wl, struct ieee80211_vif *vif)
 		break;
 	case NL80211_IFTYPE_P2P_GO:
 		wlvif->p2p = 1;
-		/* fall-through */
+		fallthrough;
 	case NL80211_IFTYPE_AP:
 	case NL80211_IFTYPE_MESH_POINT:
 		wlvif->bss_type = BSS_TYPE_AP_BSS;
@@ -2872,8 +2872,21 @@ static int wlcore_join(struct wl1271 *wl, struct wl12xx_vif *wlvif)
 
 	if (is_ibss)
 		ret = wl12xx_cmd_role_start_ibss(wl, wlvif);
-	else
+	else {
+		if (wl->quirks & WLCORE_QUIRK_START_STA_FAILS) {
+			/*
+			 * TODO: this is an ugly workaround for wl12xx fw
+			 * bug - we are not able to tx/rx after the first
+			 * start_sta, so make dummy start+stop calls,
+			 * and then call start_sta again.
+			 * this should be fixed in the fw.
+			 */
+			wl12xx_cmd_role_start_sta(wl, wlvif);
+			wl12xx_cmd_role_stop_sta(wl, wlvif);
+		}
+
 		ret = wl12xx_cmd_role_start_sta(wl, wlvif);
+	}
 
 	return ret;
 }

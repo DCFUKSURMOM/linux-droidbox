@@ -1235,7 +1235,7 @@ static ssize_t alsa_show(struct device *dev,
 
 	if (fi_midi && fi_midi->f) {
 		midi = func_to_midi(fi_midi->f);
-		if (midi->rmidi && midi->card && midi->rmidi->card)
+		if (midi->rmidi && midi->rmidi->card)
 			return sprintf(buf, "%d %d\n",
 			midi->rmidi->card->number, midi->rmidi->device);
 	}
@@ -1324,7 +1324,6 @@ static void f_midi_free(struct usb_function *f)
 		kfifo_free(&midi->in_req_fifo);
 		kfree(midi);
 		free = true;
-		opts->func_inst.f = NULL;
 	}
 	mutex_unlock(&opts->lock);
 

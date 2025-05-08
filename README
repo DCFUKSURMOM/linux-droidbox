@@ -3,7 +3,7 @@ This kernel works just fine as a "normal" kernel so there is no reason to have a
 
 This is an experimental Android x86 Linux kernel for the orignal Xbox
 
-The kernel version is 5.10.31 and is based on https://github.com/maurossi/linux/tree/kernel-5.10 with the xbox patches from xbox linux
+The kernel version is 5.11 and is based on https://github.com/maurossi/linux/tree/kernel-5.11 with the xbox patches from xbox linux
 
 It was originally a hybrid of these 2 kernels:
 

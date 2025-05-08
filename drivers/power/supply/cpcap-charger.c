@@ -301,8 +301,6 @@ cpcap_charger_get_bat_const_charge_voltage(struct cpcap_charger_ddata *ddata)
 				&prop);
 		if (!error)
 			voltage = prop.intval;
-
-		power_supply_put(battery);
 	}
 
 	return voltage;
@@ -710,7 +708,7 @@ static int cpcap_usb_init_irq(struct platform_device *pdev,
 
 	error = devm_request_threaded_irq(ddata->dev, irq, NULL,
 					  cpcap_charger_irq_thread,
-					  IRQF_SHARED | IRQF_ONESHOT,
+					  IRQF_SHARED,
 					  name, ddata);
 	if (error) {
 		dev_err(ddata->dev, "could not get irq %s: %i\n",

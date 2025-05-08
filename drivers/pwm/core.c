@@ -304,7 +304,6 @@ int pwmchip_add_with_polarity(struct pwm_chip *chip,
 		pwm->pwm = chip->base + i;
 		pwm->hwpwm = i;
 		pwm->state.polarity = polarity;
-		pwm->state.output_type = PWM_OUTPUT_FIXED;
 
 		radix_tree_insert(&pwm_tree, pwm->pwm, pwm);
 	}
@@ -1339,7 +1338,7 @@ DEFINE_SEQ_ATTRIBUTE(pwm_debugfs);
 
 static int __init pwm_debugfs_init(void)
 {
-	debugfs_create_file("pwm", S_IFREG | S_IRUGO, NULL, NULL,
+	debugfs_create_file("pwm", S_IFREG | 0444, NULL, NULL,
 			    &pwm_debugfs_fops);
 
 	return 0;

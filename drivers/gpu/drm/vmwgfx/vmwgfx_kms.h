@@ -251,6 +251,8 @@ static const uint32_t vmw_primary_plane_formats[] = {
 	DRM_FORMAT_RGB888,
 	DRM_FORMAT_XRGB8888,
 	DRM_FORMAT_ARGB8888,
+	DRM_FORMAT_XBGR8888,
+	DRM_FORMAT_ABGR8888,
 };
 
 static const uint32_t vmw_cursor_plane_formats[] = {
@@ -473,11 +475,11 @@ void vmw_du_plane_unpin_surf(struct vmw_plane_state *vps,
 			     bool unreference);
 
 int vmw_du_crtc_atomic_check(struct drm_crtc *crtc,
-			     struct drm_crtc_state *state);
+			     struct drm_atomic_state *state);
 void vmw_du_crtc_atomic_begin(struct drm_crtc *crtc,
-			      struct drm_crtc_state *old_crtc_state);
+			      struct drm_atomic_state *state);
 void vmw_du_crtc_atomic_flush(struct drm_crtc *crtc,
-			      struct drm_crtc_state *old_crtc_state);
+			      struct drm_atomic_state *state);
 void vmw_du_crtc_reset(struct drm_crtc *crtc);
 struct drm_crtc_state *vmw_du_crtc_duplicate_state(struct drm_crtc *crtc);
 void vmw_du_crtc_destroy_state(struct drm_crtc *crtc,

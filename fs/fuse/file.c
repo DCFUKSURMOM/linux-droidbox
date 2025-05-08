@@ -42,6 +42,12 @@ static int fuse_send_open(struct fuse_mount *fm, u64 nodeid, struct file *file,
 	inarg.flags = file->f_flags & ~(O_CREAT | O_EXCL | O_NOCTTY);
 	if (!fm->fc->atomic_o_trunc)
 		inarg.flags &= ~O_TRUNC;
+
+	if (fm->fc->handle_killpriv_v2 &&
+	    (inarg.flags & O_TRUNC) && !capable(CAP_FSETID)) {
+		inarg.open_flags |= FUSE_OPEN_KILL_SUIDGID;
+	}
+
 	args.opcode = opcode;
 	args.nodeid = nodeid;
 	args.in_numargs = 1;
@@ -152,7 +158,7 @@ int fuse_do_open(struct fuse_mount *fm, u64 nodeid, struct file *file,
 		if (!err) {
 			ff->fh = outarg.fh;
 			ff->open_flags = outarg.open_flags;
-			fuse_passthrough_setup(fc, ff, &outarg);
+
 		} else if (err != -ENOSYS) {
 			fuse_file_free(ff);
 			return err;
@@ -297,8 +303,6 @@ void fuse_release_common(struct file *file, bool isdir)
 	struct fuse_file *ff = file->private_data;
 	struct fuse_release_args *ra = ff->release_args;
 	int opcode = isdir ? FUSE_RELEASEDIR : FUSE_RELEASE;
-
-	fuse_passthrough_release(&ff->passthrough);
 
 	fuse_prepare_release(fi, ff, file->f_flags, opcode);
 
@@ -1102,6 +1106,8 @@ static ssize_t fuse_send_write_pages(struct fuse_io_args *ia,
 
 	fuse_write_args_fill(ia, ff, pos, count);
 	ia->write.in.flags = fuse_write_flags(iocb);
+	if (fm->fc->handle_killpriv_v2 && !capable(CAP_FSETID))
+		ia->write.in.write_flags |= FUSE_WRITE_KILL_SUIDGID;
 
 	err = fuse_simple_request(fm, &ap->args);
 	if (!err && ia->write.out.size > count)
@@ -1265,17 +1271,24 @@ static ssize_t fuse_cache_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ssize_t written_buffered = 0;
 	struct inode *inode = mapping->host;
 	ssize_t err;
+	struct fuse_conn *fc = get_fuse_conn(inode);
 	loff_t endbyte = 0;
 
-	if (get_fuse_conn(inode)->writeback_cache) {
+	if (fc->writeback_cache) {
 		/* Update size (EOF optimization) and mode (SUID clearing) */
 		err = fuse_update_attributes(mapping->host, file);
 		if (err)
 			return err;
 
+		if (fc->handle_killpriv_v2 &&
+		    should_remove_suid(file_dentry(file))) {
+			goto writethrough;
+		}
+
 		return generic_file_write_iter(iocb, from);
 	}
 
+writethrough:
 	inode_lock(inode);
 
 	/* We can write back this queue in page reclaim */
@@ -1456,7 +1469,7 @@ ssize_t fuse_direct_io(struct fuse_io_priv *io, struct iov_iter *iter,
 
 		if (write) {
 			if (!capable(CAP_FSETID))
-				ia->write.in.write_flags |= FUSE_WRITE_KILL_PRIV;
+				ia->write.in.write_flags |= FUSE_WRITE_KILL_SUIDGID;
 
 			nres = fuse_send_write(ia, pos, nbytes, owner);
 		} else {
@@ -1566,9 +1579,7 @@ static ssize_t fuse_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	if (FUSE_IS_DAX(inode))
 		return fuse_dax_read_iter(iocb, to);
 
-	if (ff->passthrough.filp)
-		return fuse_passthrough_read_iter(iocb, to);
-	else if (!(ff->open_flags & FOPEN_DIRECT_IO))
+	if (!(ff->open_flags & FOPEN_DIRECT_IO))
 		return fuse_cache_read_iter(iocb, to);
 	else
 		return fuse_direct_read_iter(iocb, to);
@@ -1586,9 +1597,7 @@ static ssize_t fuse_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	if (FUSE_IS_DAX(inode))
 		return fuse_dax_write_iter(iocb, from);
 
-	if (ff->passthrough.filp)
-		return fuse_passthrough_write_iter(iocb, from);
-	else if (!(ff->open_flags & FOPEN_DIRECT_IO))
+	if (!(ff->open_flags & FOPEN_DIRECT_IO))
 		return fuse_cache_write_iter(iocb, from);
 	else
 		return fuse_direct_write_iter(iocb, from);
@@ -2290,6 +2299,9 @@ static int fuse_launder_page(struct page *page)
 	int err = 0;
 	if (clear_page_dirty_for_io(page)) {
 		struct inode *inode = page->mapping->host;
+
+		/* Serialize with pending writeback for the same page */
+		fuse_wait_on_page_writeback(inode, page->index);
 		err = fuse_writepage_locked(page);
 		if (!err)
 			fuse_wait_on_page_writeback(inode, page->index);
@@ -2351,9 +2363,6 @@ static int fuse_file_mmap(struct file *file, struct vm_area_struct *vma)
 	/* DAX mmap is superior to direct_io mmap */
 	if (FUSE_IS_DAX(file_inode(file)))
 		return fuse_dax_mmap(file, vma);
-
-	if (ff->passthrough.filp)
-		return fuse_passthrough_mmap(file, vma);
 
 	if (ff->open_flags & FOPEN_DIRECT_IO) {
 		/* Can't provide the coherency needed for MAP_SHARED */

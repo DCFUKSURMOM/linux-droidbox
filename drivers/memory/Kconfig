@@ -173,7 +173,7 @@ config JZ4780_NEMC
 	  memory devices such as NAND and SRAM.
 
 config MTK_SMI
-	tristate "MediaTek SoC Memory Controller driver" if COMPILE_TEST
+	bool "Mediatek SoC Memory Controller driver" if COMPILE_TEST
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	help
 	  This driver is for the Memory Controller module in MediaTek SoCs,
@@ -191,8 +191,8 @@ config DA8XX_DDRCTL
 config PL353_SMC
 	tristate "ARM PL35X Static Memory Controller(SMC) driver"
 	default y if ARM
-	depends on ARM
-	depends on ARM_AMBA || COMPILE_TEST
+	depends on ARM || COMPILE_TEST
+	depends on ARM_AMBA
 	help
 	  This driver is for the ARM PL351/PL353 Static Memory
 	  Controller(SMC) module.

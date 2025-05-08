@@ -98,6 +98,16 @@
 #define ext_debug(ino, fmt, ...)	no_printk(fmt, ##__VA_ARGS__)
 #endif
 
+#define ASSERT(assert)						\
+do {									\
+	if (unlikely(!(assert))) {					\
+		printk(KERN_EMERG					\
+		       "Assertion failure in %s() at %s:%d: '%s'\n",	\
+		       __func__, __FILE__, __LINE__, #assert);		\
+		BUG();							\
+	}								\
+} while (0)
+
 /* data type for block offset of block group */
 typedef int ext4_grpblk_t;
 
@@ -1474,7 +1484,6 @@ struct ext4_sb_info {
 	struct percpu_counter s_freeinodes_counter;
 	struct percpu_counter s_dirs_counter;
 	struct percpu_counter s_dirtyclusters_counter;
-	struct percpu_counter s_sra_exceeded_retry_limit;
 	struct blockgroup_lock *s_blockgroup_lock;
 	struct proc_dir_entry *s_proc;
 	struct kobject s_kobj;
@@ -1619,6 +1628,27 @@ struct ext4_sb_info {
 	/* Record the errseq of the backing block device */
 	errseq_t s_bdev_wb_err;
 	spinlock_t s_bdev_wb_lock;
+
+	/* Information about errors that happened during this mount */
+	spinlock_t s_error_lock;
+	int s_add_error_count;
+	int s_first_error_code;
+	__u32 s_first_error_line;
+	__u32 s_first_error_ino;
+	__u64 s_first_error_block;
+	const char *s_first_error_func;
+	time64_t s_first_error_time;
+	int s_last_error_code;
+	__u32 s_last_error_line;
+	__u32 s_last_error_ino;
+	__u64 s_last_error_block;
+	const char *s_last_error_func;
+	time64_t s_last_error_time;
+	/*
+	 * If we are in a context where we cannot update error information in
+	 * the on-disk superblock, we queue this work to do it.
+	 */
+	struct work_struct s_error_work;
 
 	/* Ext4 fast commit stuff */
 	atomic_t s_fc_subtid;
@@ -1859,7 +1889,6 @@ static inline bool ext4_verity_in_progress(struct inode *inode)
 #define EXT4_GOOD_OLD_REV	0	/* The good old (original) format */
 #define EXT4_DYNAMIC_REV	1	/* V2 format w/ dynamic inode sizes */
 
-#define EXT4_CURRENT_REV	EXT4_GOOD_OLD_REV
 #define EXT4_MAX_SUPP_REV	EXT4_DYNAMIC_REV
 
 #define EXT4_GOOD_OLD_INODE_SIZE 128
@@ -2166,17 +2195,6 @@ struct ext4_dir_entry {
 	char	name[EXT4_NAME_LEN];	/* File name */
 };
 
-
-/*
- * Encrypted Casefolded entries require saving the hash on disk. This structure
- * followed ext4_dir_entry_2's name[name_len] at the next 4 byte aligned
- * boundary.
- */
-struct ext4_dir_entry_hash {
-	__le32 hash;
-	__le32 minor_hash;
-};
-
 /*
  * The new version of the directory entry.  Since EXT4 structures are
  * stored in intel byte order, and the name_len field could never be
@@ -2190,22 +2208,6 @@ struct ext4_dir_entry_2 {
 	__u8	file_type;		/* See file type macros EXT4_FT_* below */
 	char	name[EXT4_NAME_LEN];	/* File name */
 };
-
-/*
- * Access the hashes at the end of ext4_dir_entry_2
- */
-#define EXT4_DIRENT_HASHES(entry) \
-	((struct ext4_dir_entry_hash *) \
-		(((void *)(entry)) + \
-		((8 + (entry)->name_len + EXT4_DIR_ROUND) & ~EXT4_DIR_ROUND)))
-#define EXT4_DIRENT_HASH(entry) le32_to_cpu(EXT4_DIRENT_HASHES(de)->hash)
-#define EXT4_DIRENT_MINOR_HASH(entry) \
-		le32_to_cpu(EXT4_DIRENT_HASHES(de)->minor_hash)
-
-static inline bool ext4_hash_in_dirent(const struct inode *inode)
-{
-	return IS_CASEFOLDED(inode) && IS_ENCRYPTED(inode);
-}
 
 /*
  * This is a bogus directory entry at the end of each leaf block that
@@ -2248,23 +2250,9 @@ struct ext4_dir_entry_tail {
  */
 #define EXT4_DIR_PAD			4
 #define EXT4_DIR_ROUND			(EXT4_DIR_PAD - 1)
+#define EXT4_DIR_REC_LEN(name_len)	(((name_len) + 8 + EXT4_DIR_ROUND) & \
+					 ~EXT4_DIR_ROUND)
 #define EXT4_MAX_REC_LEN		((1<<16)-1)
-
-/*
- * The rec_len is dependent on the type of directory. Directories that are
- * casefolded and encrypted need to store the hash as well, so we add room for
- * ext4_extended_dir_entry_2. For all entries related to '.' or '..' you should
- * pass NULL for dir, as those entries do not use the extra fields.
- */
-static inline unsigned int ext4_dir_rec_len(__u8 name_len,
-						const struct inode *dir)
-{
-	int rec_len = (name_len + 8 + EXT4_DIR_ROUND);
-
-	if (dir && ext4_hash_in_dirent(dir))
-		rec_len += sizeof(struct ext4_dir_entry_hash);
-	return (rec_len & ~EXT4_DIR_ROUND);
-}
 
 /*
  * If we ever get support for fs block sizes > page_size, we'll need
@@ -2322,7 +2310,6 @@ static inline __le16 ext4_rec_len_to_disk(unsigned len, unsigned blocksize)
 #define DX_HASH_LEGACY_UNSIGNED		3
 #define DX_HASH_HALF_MD4_UNSIGNED	4
 #define DX_HASH_TEA_UNSIGNED		5
-#define DX_HASH_SIPHASH			6
 
 static inline u32 ext4_chksum(struct ext4_sb_info *sbi, u32 crc,
 			      const void *address, unsigned int length)
@@ -2377,7 +2364,6 @@ struct ext4_filename {
 };
 
 #define fname_name(p) ((p)->disk_name.name)
-#define fname_usr_name(p) ((p)->usr_fname->name)
 #define fname_len(p)  ((p)->disk_name.len)
 
 /*
@@ -2608,9 +2594,9 @@ extern unsigned ext4_free_clusters_after_init(struct super_block *sb,
 ext4_fsblk_t ext4_inode_to_goal_block(struct inode *);
 
 #ifdef CONFIG_UNICODE
-extern int ext4_fname_setup_ci_filename(struct inode *dir,
+extern void ext4_fname_setup_ci_filename(struct inode *dir,
 					 const struct qstr *iname,
-					 struct ext4_filename *fname);
+					 struct fscrypt_str *fname);
 #endif
 
 #ifdef CONFIG_FS_ENCRYPTION
@@ -2641,9 +2627,9 @@ static inline int ext4_fname_setup_filename(struct inode *dir,
 	ext4_fname_from_fscrypt_name(fname, &name);
 
 #ifdef CONFIG_UNICODE
-	err = ext4_fname_setup_ci_filename(dir, iname, fname);
+	ext4_fname_setup_ci_filename(dir, iname, &fname->cf_name);
 #endif
-	return err;
+	return 0;
 }
 
 static inline int ext4_fname_prepare_lookup(struct inode *dir,
@@ -2660,9 +2646,9 @@ static inline int ext4_fname_prepare_lookup(struct inode *dir,
 	ext4_fname_from_fscrypt_name(fname, &name);
 
 #ifdef CONFIG_UNICODE
-	err = ext4_fname_setup_ci_filename(dir, &dentry->d_name, fname);
+	ext4_fname_setup_ci_filename(dir, &dentry->d_name, &fname->cf_name);
 #endif
-	return err;
+	return 0;
 }
 
 static inline void ext4_fname_free_filename(struct ext4_filename *fname)
@@ -2687,16 +2673,15 @@ static inline int ext4_fname_setup_filename(struct inode *dir,
 					    int lookup,
 					    struct ext4_filename *fname)
 {
-	int err = 0;
 	fname->usr_fname = iname;
 	fname->disk_name.name = (unsigned char *) iname->name;
 	fname->disk_name.len = iname->len;
 
 #ifdef CONFIG_UNICODE
-	err = ext4_fname_setup_ci_filename(dir, iname, fname);
+	ext4_fname_setup_ci_filename(dir, iname, &fname->cf_name);
 #endif
 
-	return err;
+	return 0;
 }
 
 static inline int ext4_fname_prepare_lookup(struct inode *dir,
@@ -2720,22 +2705,21 @@ extern int __ext4_check_dir_entry(const char *, unsigned int, struct inode *,
 				  struct file *,
 				  struct ext4_dir_entry_2 *,
 				  struct buffer_head *, char *, int,
-				  ext4_lblk_t, unsigned int);
-#define ext4_check_dir_entry(dir, filp, de, bh, buf, size, lblk, offset) \
+				  unsigned int);
+#define ext4_check_dir_entry(dir, filp, de, bh, buf, size, offset)	\
 	unlikely(__ext4_check_dir_entry(__func__, __LINE__, (dir), (filp), \
-				(de), (bh), (buf), (size), (lblk), (offset)))
+					(de), (bh), (buf), (size), (offset)))
 extern int ext4_htree_store_dirent(struct file *dir_file, __u32 hash,
 				__u32 minor_hash,
 				struct ext4_dir_entry_2 *dirent,
 				struct fscrypt_str *ent_name);
 extern void ext4_htree_free_dir_info(struct dir_private_info *p);
 extern int ext4_find_dest_de(struct inode *dir, struct inode *inode,
-			     ext4_lblk_t lblk,
 			     struct buffer_head *bh,
 			     void *buf, int buf_size,
 			     struct ext4_filename *fname,
 			     struct ext4_dir_entry_2 **dest_de);
-void ext4_insert_dentry(struct inode *dir, struct inode *inode,
+void ext4_insert_dentry(struct inode *inode,
 			struct ext4_dir_entry_2 *de,
 			int buf_size,
 			struct ext4_filename *fname);
@@ -2808,8 +2792,6 @@ void __ext4_fc_track_link(handle_t *handle, struct inode *inode,
 	struct dentry *dentry);
 void ext4_fc_track_unlink(handle_t *handle, struct dentry *dentry);
 void ext4_fc_track_link(handle_t *handle, struct dentry *dentry);
-void __ext4_fc_track_create(handle_t *handle, struct inode *inode,
-			    struct dentry *dentry);
 void ext4_fc_track_create(handle_t *handle, struct dentry *dentry);
 void ext4_fc_track_inode(handle_t *handle, struct inode *inode);
 void ext4_fc_mark_ineligible(struct super_block *sb, int reason);
@@ -2959,11 +2941,10 @@ extern int ext4_search_dir(struct buffer_head *bh,
 			   int buf_size,
 			   struct inode *dir,
 			   struct ext4_filename *fname,
-			   ext4_lblk_t lblk, unsigned int offset,
+			   unsigned int offset,
 			   struct ext4_dir_entry_2 **res_dir);
 extern int ext4_generic_delete_entry(struct inode *dir,
 				     struct ext4_dir_entry_2 *de_del,
-				     ext4_lblk_t lblk,
 				     struct buffer_head *bh,
 				     void *entry_buf,
 				     int buf_size,
@@ -3001,9 +2982,9 @@ extern void ext4_mark_group_bitmap_corrupted(struct super_block *sb,
 					     ext4_group_t block_group,
 					     unsigned int flags);
 
-extern __printf(6, 7)
-void __ext4_error(struct super_block *, const char *, unsigned int, int, __u64,
-		  const char *, ...);
+extern __printf(7, 8)
+void __ext4_error(struct super_block *, const char *, unsigned int, bool,
+		  int, __u64, const char *, ...);
 extern __printf(6, 7)
 void __ext4_error_inode(struct inode *, const char *, unsigned int,
 			ext4_fsblk_t, int, const char *, ...);
@@ -3012,9 +2993,6 @@ void __ext4_error_file(struct file *, const char *, unsigned int, ext4_fsblk_t,
 		     const char *, ...);
 extern void __ext4_std_error(struct super_block *, const char *,
 			     unsigned int, int);
-extern __printf(5, 6)
-void __ext4_abort(struct super_block *, const char *, unsigned int, int,
-		  const char *, ...);
 extern __printf(4, 5)
 void __ext4_warning(struct super_block *, const char *, unsigned int,
 		    const char *, ...);
@@ -3044,6 +3022,9 @@ void __ext4_grp_locked_error(const char *, unsigned int,
 #define EXT4_ERROR_FILE(file, block, fmt, a...)				\
 	ext4_error_file((file), __func__, __LINE__, (block), (fmt), ## a)
 
+#define ext4_abort(sb, err, fmt, a...)					\
+	__ext4_error((sb), __func__, __LINE__, true, (err), 0, (fmt), ## a)
+
 #ifdef CONFIG_PRINTK
 
 #define ext4_error_inode(inode, func, line, block, fmt, ...)		\
@@ -3054,11 +3035,11 @@ void __ext4_grp_locked_error(const char *, unsigned int,
 #define ext4_error_file(file, func, line, block, fmt, ...)		\
 	__ext4_error_file(file, func, line, block, fmt, ##__VA_ARGS__)
 #define ext4_error(sb, fmt, ...)					\
-	__ext4_error((sb), __func__, __LINE__, 0, 0, (fmt), ##__VA_ARGS__)
+	__ext4_error((sb), __func__, __LINE__, false, 0, 0, (fmt),	\
+		##__VA_ARGS__)
 #define ext4_error_err(sb, err, fmt, ...)				\
-	__ext4_error((sb), __func__, __LINE__, (err), 0, (fmt), ##__VA_ARGS__)
-#define ext4_abort(sb, err, fmt, ...)					\
-	__ext4_abort((sb), __func__, __LINE__, (err), (fmt), ##__VA_ARGS__)
+	__ext4_error((sb), __func__, __LINE__, false, (err), 0, (fmt),	\
+		##__VA_ARGS__)
 #define ext4_warning(sb, fmt, ...)					\
 	__ext4_warning(sb, __func__, __LINE__, fmt, ##__VA_ARGS__)
 #define ext4_warning_inode(inode, fmt, ...)				\
@@ -3091,17 +3072,12 @@ do {									\
 #define ext4_error(sb, fmt, ...)					\
 do {									\
 	no_printk(fmt, ##__VA_ARGS__);					\
-	__ext4_error(sb, "", 0, 0, 0, " ");				\
+	__ext4_error(sb, "", 0, false, 0, 0, " ");			\
 } while (0)
 #define ext4_error_err(sb, err, fmt, ...)				\
 do {									\
 	no_printk(fmt, ##__VA_ARGS__);					\
-	__ext4_error(sb, "", 0, err, 0, " ");				\
-} while (0)
-#define ext4_abort(sb, err, fmt, ...)					\
-do {									\
-	no_printk(fmt, ##__VA_ARGS__);					\
-	__ext4_abort(sb, "", 0, err, " ");				\
+	__ext4_error(sb, "", 0, false, err, 0, " ");			\
 } while (0)
 #define ext4_warning(sb, fmt, ...)					\
 do {									\
@@ -3410,6 +3386,21 @@ static inline void ext4_unlock_group(struct super_block *sb,
 	spin_unlock(ext4_group_lock_ptr(sb, group));
 }
 
+#ifdef CONFIG_QUOTA
+static inline bool ext4_quota_capable(struct super_block *sb)
+{
+	return (test_opt(sb, QUOTA) || ext4_has_feature_quota(sb));
+}
+
+static inline bool ext4_is_quota_journalled(struct super_block *sb)
+{
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
+
+	return (ext4_has_feature_quota(sb) ||
+		sbi->s_qf_names[USRQUOTA] || sbi->s_qf_names[GRPQUOTA]);
+}
+#endif
+
 /*
  * Block validity checking
  */
@@ -3521,6 +3512,9 @@ extern void ext4_initialize_dirent_tail(struct buffer_head *bh,
 					unsigned int blocksize);
 extern int ext4_handle_dirty_dirblock(handle_t *handle, struct inode *inode,
 				      struct buffer_head *bh);
+extern int ext4_ci_compare(const struct inode *parent,
+			   const struct qstr *fname,
+			   const struct qstr *entry, bool quick);
 extern int __ext4_unlink(handle_t *handle, struct inode *dir, const struct qstr *d_name,
 			 struct inode *inode);
 extern int __ext4_link(struct inode *dir, struct inode *inode,
@@ -3655,7 +3649,6 @@ extern void ext4_io_submit(struct ext4_io_submit *io);
 extern int ext4_bio_write_page(struct ext4_io_submit *io,
 			       struct page *page,
 			       int len,
-			       struct writeback_control *wbc,
 			       bool keep_towrite);
 extern struct ext4_io_end_vec *ext4_alloc_io_end_vec(ext4_io_end_t *io_end);
 extern struct ext4_io_end_vec *ext4_last_io_end_vec(ext4_io_end_t *io_end);

@@ -74,11 +74,17 @@ out_unlock:
  */
 static int svc_rdma_bc_sendto(struct svcxprt_rdma *rdma,
 			      struct rpc_rqst *rqst,
-			      struct svc_rdma_send_ctxt *ctxt)
+			      struct svc_rdma_send_ctxt *sctxt)
 {
+	struct svc_rdma_recv_ctxt *rctxt;
 	int ret;
 
-	ret = svc_rdma_map_reply_msg(rdma, ctxt, NULL, &rqst->rq_snd_buf);
+	rctxt = svc_rdma_recv_ctxt_get(rdma);
+	if (!rctxt)
+		return -EIO;
+
+	ret = svc_rdma_map_reply_msg(rdma, sctxt, rctxt, &rqst->rq_snd_buf);
+	svc_rdma_recv_ctxt_put(rdma, rctxt);
 	if (ret < 0)
 		return -EIO;
 
@@ -86,8 +92,8 @@ static int svc_rdma_bc_sendto(struct svcxprt_rdma *rdma,
 	 * the rq_buffer before all retransmits are complete.
 	 */
 	get_page(virt_to_page(rqst->rq_buffer));
-	ctxt->sc_send_wr.opcode = IB_WR_SEND;
-	return svc_rdma_send(rdma, ctxt);
+	sctxt->sc_send_wr.opcode = IB_WR_SEND;
+	return svc_rdma_send(rdma, sctxt);
 }
 
 /* Server-side transport endpoint wants a whole page for its send
@@ -246,9 +252,9 @@ xprt_setup_rdma_bc(struct xprt_create *args)
 	xprt->timeout = &xprt_rdma_bc_timeout;
 	xprt_set_bound(xprt);
 	xprt_set_connected(xprt);
-	xprt->bind_timeout = 0;
-	xprt->reestablish_timeout = 0;
-	xprt->idle_timeout = 0;
+	xprt->bind_timeout = RPCRDMA_BIND_TO;
+	xprt->reestablish_timeout = RPCRDMA_INIT_REEST_TO;
+	xprt->idle_timeout = RPCRDMA_IDLE_DISC_TO;
 
 	xprt->prot = XPRT_TRANSPORT_BC_RDMA;
 	xprt->ops = &xprt_rdma_bc_procs;

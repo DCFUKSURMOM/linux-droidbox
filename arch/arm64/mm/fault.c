@@ -10,7 +10,6 @@
 #include <linux/acpi.h>
 #include <linux/bitfield.h>
 #include <linux/extable.h>
-#include <linux/kfence.h>
 #include <linux/signal.h>
 #include <linux/mm.h>
 #include <linux/hardirq.h>
@@ -41,8 +40,6 @@
 #include <asm/system_misc.h>
 #include <asm/tlbflush.h>
 #include <asm/traps.h>
-
-#include <trace/hooks/fault.h>
 
 struct fault_info {
 	int	(*fn)(unsigned long far, unsigned int esr,
@@ -293,7 +290,6 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
 	pr_alert("Unable to handle kernel %s at virtual address %016lx\n", msg,
 		 addr);
 
-	trace_android_rvh_die_kernel_fault(regs, esr, addr, msg);
 	mem_abort_decode(esr);
 
 	show_pte(addr);
@@ -306,24 +302,12 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
 static void report_tag_fault(unsigned long addr, unsigned int esr,
 			     struct pt_regs *regs)
 {
-	static bool reported;
-	bool is_write;
-
-	if (READ_ONCE(reported))
-		return;
-
-	/*
-	 * This is used for KASAN tests and assumes that no MTE faults
-	 * happened before running the tests.
-	 */
-	if (mte_report_once())
-		WRITE_ONCE(reported, true);
+	bool is_write  = ((esr & ESR_ELx_WNR) >> ESR_ELx_WNR_SHIFT) != 0;
 
 	/*
 	 * SAS bits aren't set for all faults reported in EL1, so we can't
 	 * find out access size.
 	 */
-	is_write = !!(esr & ESR_ELx_WNR);
 	kasan_report(addr, 0, is_write, regs->pc);
 }
 #else
@@ -335,8 +319,12 @@ static inline void report_tag_fault(unsigned long addr, unsigned int esr,
 static void do_tag_recovery(unsigned long addr, unsigned int esr,
 			   struct pt_regs *regs)
 {
+	static bool reported;
 
-	report_tag_fault(addr, esr, regs);
+	if (!READ_ONCE(reported)) {
+		report_tag_fault(addr, esr, regs);
+		WRITE_ONCE(reported, true);
+	}
 
 	/*
 	 * Disable MTE Tag Checking on the local CPU for the current EL.
@@ -393,9 +381,6 @@ static void __do_kernel_fault(unsigned long addr, unsigned int esr,
 	} else if (addr < PAGE_SIZE) {
 		msg = "NULL pointer dereference";
 	} else {
-		if (kfence_handle_page_fault(addr, esr & ESR_ELx_WNR, regs))
-			return;
-
 		msg = "paging request";
 	}
 
@@ -481,10 +466,11 @@ static void do_bad_area(unsigned long far, unsigned int esr,
 #define VM_FAULT_BADMAP		0x010000
 #define VM_FAULT_BADACCESS	0x020000
 
-static int __do_page_fault(struct vm_area_struct *vma, unsigned long addr,
+static vm_fault_t __do_page_fault(struct mm_struct *mm, unsigned long addr,
 				  unsigned int mm_flags, unsigned long vm_flags,
 				  struct pt_regs *regs)
 {
+	struct vm_area_struct *vma = find_vma(mm, addr);
 
 	if (unlikely(!vma))
 		return VM_FAULT_BADMAP;
@@ -531,7 +517,6 @@ static int __kprobes do_page_fault(unsigned long far, unsigned int esr,
 	vm_fault_t fault;
 	unsigned long vm_flags = VM_ACCESS_FLAGS;
 	unsigned int mm_flags = FAULT_FLAG_DEFAULT;
-	struct vm_area_struct *vma = NULL;
 	unsigned long addr = untagged_addr(far);
 
 	if (kprobe_page_fault(regs, esr))
@@ -556,11 +541,6 @@ static int __kprobes do_page_fault(unsigned long far, unsigned int esr,
 	}
 
 	if (is_ttbr0_addr(addr) && is_el1_permission_fault(addr, esr, regs)) {
-		/* regs->orig_addr_limit may be 0 if we entered from EL0 */
-		if (regs->orig_addr_limit == KERNEL_DS)
-			die_kernel_fault("access to user memory with fs=KERNEL_DS",
-					 addr, esr, regs);
-
 		if (is_el1_instruction_abort(esr))
 			die_kernel_fault("execution of user memory",
 					 addr, esr, regs);
@@ -571,14 +551,6 @@ static int __kprobes do_page_fault(unsigned long far, unsigned int esr,
 	}
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
-
-	/*
-	 * let's try a speculative page fault without grabbing the
-	 * mmap_sem.
-	 */
-	fault = handle_speculative_fault(mm, addr, mm_flags, &vma);
-	if (fault != VM_FAULT_RETRY)
-		goto done;
 
 	/*
 	 * As per x86, we may deadlock here. However, since the kernel only
@@ -604,9 +576,7 @@ retry:
 #endif
 	}
 
-	if (!vma || !can_reuse_spf_vma(vma, addr))
-		vma = find_vma(mm, addr);
-	fault = __do_page_fault(vma, addr, mm_flags, vm_flags, regs);
+	fault = __do_page_fault(mm, addr, mm_flags, vm_flags, regs);
 
 	/* Quick path to respond to signals */
 	if (fault_signal_pending(fault, regs)) {
@@ -618,19 +588,10 @@ retry:
 	if (fault & VM_FAULT_RETRY) {
 		if (mm_flags & FAULT_FLAG_ALLOW_RETRY) {
 			mm_flags |= FAULT_FLAG_TRIED;
-
-			/*
-			 * Do not try to reuse this vma and fetch it
-			 * again since we will release the mmap_sem.
-			 */
-			vma = NULL;
-
 			goto retry;
 		}
 	}
 	mmap_read_unlock(mm);
-
-done:
 
 	/*
 	 * Handle the "normal" (no error) case first.
@@ -739,7 +700,6 @@ static int do_sea(unsigned long far, unsigned int esr, struct pt_regs *regs)
 		 */
 		siaddr  = untagged_addr(far);
 	}
-	trace_android_rvh_do_sea(regs, esr, siaddr, inf->name);
 	arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
 
 	return 0;
@@ -835,7 +795,6 @@ void do_mem_abort(unsigned long far, unsigned int esr, struct pt_regs *regs)
 
 	if (!user_mode(regs)) {
 		pr_alert("Unhandled fault at 0x%016lx\n", addr);
-		trace_android_rvh_do_mem_abort(regs, esr, addr, inf->name);
 		mem_abort_decode(esr);
 		show_pte(addr);
 	}
@@ -858,8 +817,6 @@ NOKPROBE_SYMBOL(do_el0_irq_bp_hardening);
 
 void do_sp_pc_abort(unsigned long addr, unsigned int esr, struct pt_regs *regs)
 {
-	trace_android_rvh_do_sp_pc_abort(regs, esr, addr, user_mode(regs));
-
 	arm64_notify_die("SP/PC alignment exception", regs, SIGBUS, BUS_ADRALN,
 			 addr, esr);
 }

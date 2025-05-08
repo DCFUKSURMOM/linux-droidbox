@@ -543,7 +543,7 @@ static void siu_pcm_free(struct snd_soc_component *component,
 	dev_dbg(pcm->card->dev, "%s\n", __func__);
 }
 
-const struct snd_soc_component_driver siu_component = {
+struct const snd_soc_component_driver siu_component = {
 	.name		= DRV_NAME,
 	.open		= siu_pcm_open,
 	.close		= siu_pcm_close,

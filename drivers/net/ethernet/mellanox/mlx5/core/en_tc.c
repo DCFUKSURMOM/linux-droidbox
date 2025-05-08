@@ -272,8 +272,6 @@ mlx5e_tc_match_to_reg_set(struct mlx5_core_dev *mdev,
 	return 0;
 }
 
-#define esw_offloads_mode(esw) (mlx5_eswitch_mode(esw) == MLX5_ESWITCH_OFFLOADS)
-
 static struct mlx5_tc_ct_priv *
 get_ct_priv(struct mlx5e_priv *priv)
 {
@@ -281,7 +279,7 @@ get_ct_priv(struct mlx5e_priv *priv)
 	struct mlx5_rep_uplink_priv *uplink_priv;
 	struct mlx5e_rep_priv *uplink_rpriv;
 
-	if (esw_offloads_mode(esw)) {
+	if (is_mdev_switchdev_mode(priv->mdev)) {
 		uplink_rpriv = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
 		uplink_priv = &uplink_rpriv->uplink_priv;
 
@@ -298,7 +296,7 @@ mlx5_tc_rule_insert(struct mlx5e_priv *priv,
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 
-	if (esw_offloads_mode(esw))
+	if (is_mdev_switchdev_mode(priv->mdev))
 		return mlx5_eswitch_add_offloaded_rule(esw, spec, attr);
 
 	return	mlx5e_add_offloaded_nic_rule(priv, spec, attr);
@@ -311,7 +309,7 @@ mlx5_tc_rule_delete(struct mlx5e_priv *priv,
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 
-	if (esw_offloads_mode(esw)) {
+	if (is_mdev_switchdev_mode(priv->mdev)) {
 		mlx5_eswitch_del_offloaded_rule(esw, rule, attr);
 
 		return;
@@ -2597,16 +2595,6 @@ static int __parse_cls_flower(struct mlx5e_priv *priv,
 			*match_level = MLX5_MATCH_L4;
 	}
 
-	/* Currenlty supported only for MPLS over UDP */
-	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_MPLS) &&
-	    !netif_is_bareudp(filter_dev)) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "Matching on MPLS is supported only for MPLS over UDP");
-		netdev_err(priv->netdev,
-			   "Matching on MPLS is supported only for MPLS over UDP\n");
-		return -EOPNOTSUPP;
-	}
-
 	return 0;
 }
 
@@ -3210,37 +3198,6 @@ static int is_action_keys_supported(const struct flow_action_entry *act,
 	return 0;
 }
 
-static bool modify_tuple_supported(bool modify_tuple, bool ct_clear,
-				   bool ct_flow, struct netlink_ext_ack *extack,
-				   struct mlx5e_priv *priv,
-				   struct mlx5_flow_spec *spec)
-{
-	if (!modify_tuple || ct_clear)
-		return true;
-
-	if (ct_flow) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "can't offload tuple modification with non-clear ct()");
-		netdev_info(priv->netdev,
-			    "can't offload tuple modification with non-clear ct()");
-		return false;
-	}
-
-	/* Add ct_state=-trk match so it will be offloaded for non ct flows
-	 * (or after clear action), as otherwise, since the tuple is changed,
-	 * we can't restore ct state
-	 */
-	if (mlx5_tc_ct_add_no_trk_match(spec)) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "can't offload tuple modification with ct matches and no ct(clear) action");
-		netdev_info(priv->netdev,
-			    "can't offload tuple modification with ct matches and no ct(clear) action");
-		return false;
-	}
-
-	return true;
-}
-
 static bool modify_header_match_supported(struct mlx5e_priv *priv,
 					  struct mlx5_flow_spec *spec,
 					  struct flow_action *flow_action,
@@ -3279,9 +3236,18 @@ static bool modify_header_match_supported(struct mlx5e_priv *priv,
 			return err;
 	}
 
-	if (!modify_tuple_supported(modify_tuple, ct_clear, ct_flow, extack,
-				    priv, spec))
+	/* Add ct_state=-trk match so it will be offloaded for non ct flows
+	 * (or after clear action), as otherwise, since the tuple is changed,
+	 *  we can't restore ct state
+	 */
+	if (!ct_clear && modify_tuple &&
+	    mlx5_tc_ct_add_no_trk_match(spec)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "can't offload tuple modify header with ct matches");
+		netdev_info(priv->netdev,
+			    "can't offload tuple modify header with ct matches");
 		return false;
+	}
 
 	ip_proto = MLX5_GET(fte_match_set_lyr_2_4, headers_v, ip_protocol);
 	if (modify_ip_header && ip_proto != IPPROTO_TCP &&

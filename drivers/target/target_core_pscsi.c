@@ -939,14 +939,6 @@ new_bio:
 
 	return 0;
 fail:
-	if (bio)
-		bio_put(bio);
-	while (req->bio) {
-		bio = req->bio;
-		req->bio = bio->bi_next;
-		bio_put(bio);
-	}
-	req->biotail = NULL;
 	return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 }
 
@@ -1037,9 +1029,8 @@ static sector_t pscsi_get_blocks(struct se_device *dev)
 {
 	struct pscsi_dev_virt *pdv = PSCSI_DEV(dev);
 
-	if (pdv->pdv_bd && pdv->pdv_bd->bd_part)
-		return pdv->pdv_bd->bd_part->nr_sects;
-
+	if (pdv->pdv_bd)
+		return bdev_nr_sectors(pdv->pdv_bd);
 	return 0;
 }
 

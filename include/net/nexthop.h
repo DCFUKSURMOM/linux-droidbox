@@ -105,11 +105,49 @@ struct nexthop {
 };
 
 enum nexthop_event_type {
-	NEXTHOP_EVENT_DEL
+	NEXTHOP_EVENT_DEL,
+	NEXTHOP_EVENT_REPLACE,
 };
 
-int register_nexthop_notifier(struct net *net, struct notifier_block *nb);
+struct nh_notifier_single_info {
+	struct net_device *dev;
+	u8 gw_family;
+	union {
+		__be32 ipv4;
+		struct in6_addr ipv6;
+	};
+	u8 is_reject:1,
+	   is_fdb:1,
+	   has_encap:1;
+};
+
+struct nh_notifier_grp_entry_info {
+	u8 weight;
+	u32 id;
+	struct nh_notifier_single_info nh;
+};
+
+struct nh_notifier_grp_info {
+	u16 num_nh;
+	bool is_fdb;
+	struct nh_notifier_grp_entry_info nh_entries[];
+};
+
+struct nh_notifier_info {
+	struct net *net;
+	struct netlink_ext_ack *extack;
+	u32 id;
+	bool is_grp;
+	union {
+		struct nh_notifier_single_info *nh;
+		struct nh_notifier_grp_info *nh_grp;
+	};
+};
+
+int register_nexthop_notifier(struct net *net, struct notifier_block *nb,
+			      struct netlink_ext_ack *extack);
 int unregister_nexthop_notifier(struct net *net, struct notifier_block *nb);
+void nexthop_set_hw_flags(struct net *net, u32 id, bool offload, bool trap);
 
 /* caller is holding rcu or rtnl; no reference taken to nexthop */
 struct nexthop *nexthop_find_by_id(struct net *net, u32 id);
@@ -362,7 +400,6 @@ static inline struct fib_nh *fib_info_nh(struct fib_info *fi, int nhsel)
 int fib6_check_nexthop(struct nexthop *nh, struct fib6_config *cfg,
 		       struct netlink_ext_ack *extack);
 
-/* Caller should either hold rcu_read_lock(), or RTNL. */
 static inline struct fib6_nh *nexthop_fib6_nh(struct nexthop *nh)
 {
 	struct nh_info *nhi;
@@ -377,29 +414,6 @@ static inline struct fib6_nh *nexthop_fib6_nh(struct nexthop *nh)
 	}
 
 	nhi = rcu_dereference_rtnl(nh->nh_info);
-	if (nhi->family == AF_INET6)
-		return &nhi->fib6_nh;
-
-	return NULL;
-}
-
-/* Variant of nexthop_fib6_nh().
- * Caller should either hold rcu_read_lock_bh(), or RTNL.
- */
-static inline struct fib6_nh *nexthop_fib6_nh_bh(struct nexthop *nh)
-{
-	struct nh_info *nhi;
-
-	if (nh->is_group) {
-		struct nh_group *nh_grp;
-
-		nh_grp = rcu_dereference_bh_rtnl(nh->nh_grp);
-		nh = nexthop_mpath_select(nh_grp, 0);
-		if (!nh)
-			return NULL;
-	}
-
-	nhi = rcu_dereference_bh_rtnl(nh->nh_info);
 	if (nhi->family == AF_INET6)
 		return &nhi->fib6_nh;
 

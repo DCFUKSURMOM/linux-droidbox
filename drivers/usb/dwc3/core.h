@@ -30,8 +30,6 @@
 
 #include <linux/phy/phy.h>
 
-#include <linux/power_supply.h>
-
 #define DWC3_MSG_MAX	500
 
 /* Global constants */
@@ -388,8 +386,6 @@
 #define DWC3_GUCTL3_SPLITDISABLE		BIT(14)
 
 /* Device Configuration Register */
-#define DWC3_DCFG_NUMLANES(n)	(((n) & 0x3) << 30) /* DWC_usb32 only */
-
 #define DWC3_DCFG_DEVADDR(addr)	((addr) << 3)
 #define DWC3_DCFG_DEVADDR_MASK	DWC3_DCFG_DEVADDR(0x7f)
 
@@ -404,7 +400,6 @@
 #define DWC3_DCFG_NUMP(n)	(((n) >> DWC3_DCFG_NUMP_SHIFT) & 0x1f)
 #define DWC3_DCFG_NUMP_MASK	(0x1f << DWC3_DCFG_NUMP_SHIFT)
 #define DWC3_DCFG_LPM_CAP	BIT(22)
-#define DWC3_DCFG_IGNSTRMPP	BIT(23)
 
 /* Device Control Register */
 #define DWC3_DCTL_RUN_STOP	BIT(31)
@@ -463,8 +458,6 @@
 #define DWC3_DEVTEN_CONNECTDONEEN	BIT(2)
 #define DWC3_DEVTEN_USBRSTEN		BIT(1)
 #define DWC3_DEVTEN_DISCONNEVTEN	BIT(0)
-
-#define DWC3_DSTS_CONNLANES(n)		(((n) >> 30) & 0x3) /* DWC_usb32 only */
 
 /* Device Status Register */
 #define DWC3_DSTS_DCNRD			BIT(29)
@@ -911,13 +904,11 @@ struct dwc3_request {
 	unsigned int		remaining;
 
 	unsigned int		status;
-#define DWC3_REQUEST_STATUS_QUEUED		0
-#define DWC3_REQUEST_STATUS_STARTED		1
-#define DWC3_REQUEST_STATUS_DISCONNECTED	2
-#define DWC3_REQUEST_STATUS_DEQUEUED		3
-#define DWC3_REQUEST_STATUS_STALLED		4
-#define DWC3_REQUEST_STATUS_COMPLETED		5
-#define DWC3_REQUEST_STATUS_UNKNOWN		-1
+#define DWC3_REQUEST_STATUS_QUEUED	0
+#define DWC3_REQUEST_STATUS_STARTED	1
+#define DWC3_REQUEST_STATUS_CANCELLED	2
+#define DWC3_REQUEST_STATUS_COMPLETED	3
+#define DWC3_REQUEST_STATUS_UNKNOWN	-1
 
 	u8			epnum;
 	struct dwc3_trb		*trb;
@@ -973,10 +964,6 @@ struct dwc3_scratchpad_array {
  * @nr_scratch: number of scratch buffers
  * @u1u2: only used on revisions <1.83a for workaround
  * @maximum_speed: maximum speed requested (mainly for testing purposes)
- * @max_ssp_rate: SuperSpeed Plus maximum signaling rate and lane count
- * @gadget_max_speed: maximum gadget speed requested
- * @gadget_ssp_rate: Gadget driver's maximum supported SuperSpeed Plus signaling
- *			rate and lane count.
  * @ip: controller's ID
  * @revision: controller's version of an IP
  * @version_type: VERSIONTYPE register contents, a sub release of a revision
@@ -991,7 +978,6 @@ struct dwc3_scratchpad_array {
  * @role_sw: usb_role_switch handle
  * @role_switch_default_mode: default operation mode of controller while
  *			usb role is USB_ROLE_NONE.
- * @usb_psy: pointer to power supply interface.
  * @usb2_phy: pointer to USB2 PHY
  * @usb3_phy: pointer to USB3 PHY
  * @usb2_generic_phy: pointer to USB2 PHY
@@ -1131,8 +1117,6 @@ struct dwc3 {
 	struct usb_role_switch	*role_sw;
 	enum usb_dr_mode	role_switch_default_mode;
 
-	struct power_supply	*usb_psy;
-
 	u32			fladj;
 	u32			irq_gadget;
 	u32			otg_irq;
@@ -1142,9 +1126,6 @@ struct dwc3 {
 	u32			nr_scratch;
 	u32			u1u2;
 	u32			maximum_speed;
-	u32			gadget_max_speed;
-	enum usb_ssp_rate	max_ssp_rate;
-	enum usb_ssp_rate	gadget_ssp_rate;
 
 	u32			ip;
 
@@ -1488,7 +1469,6 @@ int dwc3_send_gadget_ep_cmd(struct dwc3_ep *dep, unsigned int cmd,
 		struct dwc3_gadget_ep_cmd_params *params);
 int dwc3_send_gadget_generic_command(struct dwc3 *dwc, unsigned int cmd,
 		u32 param);
-void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool interrupt);
 #else
 static inline int dwc3_gadget_init(struct dwc3 *dwc)
 { return 0; }
@@ -1508,9 +1488,6 @@ static inline int dwc3_send_gadget_ep_cmd(struct dwc3_ep *dep, unsigned int cmd,
 static inline int dwc3_send_gadget_generic_command(struct dwc3 *dwc,
 		int cmd, u32 param)
 { return 0; }
-static inline void dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force,
-					     bool interrupt)
-{ }
 #endif
 
 #if IS_ENABLED(CONFIG_USB_DWC3_DUAL_ROLE)

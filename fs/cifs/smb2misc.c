@@ -109,8 +109,17 @@ static __u32 get_neg_ctxt_len(struct smb2_sync_hdr *hdr, __u32 len,
 	   (pneg_rsp->DialectRevision != cpu_to_le16(SMB311_PROT_ID)))
 		return 0;
 
-	/* Make sure that negotiate contexts start after gss security blob */
+	/*
+	 * if SPNEGO blob present (ie the RFC2478 GSS info which indicates
+	 * which security mechanisms the server supports) make sure that
+	 * the negotiate contexts start after it
+	 */
 	nc_offset = le32_to_cpu(pneg_rsp->NegotiateContextOffset);
+	/*
+	 * non_ctxlen is at least shdr->StructureSize + pdu->StructureSize2
+	 * and the latter is 1 byte bigger than the fix-sized area of the
+	 * NEGOTIATE response
+	 */
 	if (nc_offset + 1 < non_ctxlen) {
 		pr_warn_once("Invalid negotiate context offset %d\n", nc_offset);
 		return 0;
@@ -745,8 +754,8 @@ smb2_is_valid_oplock_break(char *buffer, struct TCP_Server_Info *server)
 		}
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
-	cifs_dbg(FYI, "No file id matched, oplock break ignored\n");
-	return true;
+	cifs_dbg(FYI, "Can not process oplock break for non-existent connection\n");
+	return false;
 }
 
 void
@@ -835,14 +844,14 @@ smb2_handle_cancelled_close(struct cifs_tcon *tcon, __u64 persistent_fid,
 }
 
 int
-smb2_handle_cancelled_mid(struct mid_q_entry *mid, struct TCP_Server_Info *server)
+smb2_handle_cancelled_mid(char *buffer, struct TCP_Server_Info *server)
 {
-	struct smb2_sync_hdr *sync_hdr = mid->resp_buf;
-	struct smb2_create_rsp *rsp = mid->resp_buf;
+	struct smb2_sync_hdr *sync_hdr = (struct smb2_sync_hdr *)buffer;
+	struct smb2_create_rsp *rsp = (struct smb2_create_rsp *)buffer;
 	struct cifs_tcon *tcon;
 	int rc;
 
-	if ((mid->optype & CIFS_CP_CREATE_CLOSE_OP) || sync_hdr->Command != SMB2_CREATE ||
+	if (sync_hdr->Command != SMB2_CREATE ||
 	    sync_hdr->Status != STATUS_SUCCESS)
 		return 0;
 
@@ -867,6 +876,10 @@ smb2_handle_cancelled_mid(struct mid_q_entry *mid, struct TCP_Server_Info *serve
  *
  * Assumes @iov does not contain the rfc1002 length and iov[0] has the
  * SMB2 header.
+ *
+ * @ses:	server session structure
+ * @iov:	array containing the SMB request we will send to the server
+ * @nvec:	number of array entries for the iov
  */
 int
 smb311_update_preauth_hash(struct cifs_ses *ses, struct kvec *iov, int nvec)

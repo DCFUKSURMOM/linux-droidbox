@@ -606,7 +606,6 @@ struct swevent_hlist {
 #define PERF_ATTACH_TASK	0x04
 #define PERF_ATTACH_TASK_DATA	0x08
 #define PERF_ATTACH_ITRACE	0x10
-#define PERF_ATTACH_SCHED_CB	0x20
 
 struct perf_cgroup;
 struct perf_buffer;
@@ -873,7 +872,6 @@ struct perf_cpu_context {
 	struct list_head		cgrp_cpuctx_entry;
 #endif
 
-	struct list_head		sched_cb_entry;
 	int				sched_cb_usage;
 
 	int				online;
@@ -1030,6 +1028,8 @@ struct perf_sample_data {
 
 	u64				phys_addr;
 	u64				cgroup;
+	u64				data_page_size;
+	u64				code_page_size;
 } ____cacheline_aligned;
 
 /* default value for data source */
@@ -1586,5 +1586,9 @@ int perf_event_exit_cpu(unsigned int cpu);
 extern void __weak arch_perf_update_userpage(struct perf_event *event,
 					     struct perf_event_mmap_page *userpg,
 					     u64 now);
+
+#ifdef CONFIG_MMU
+extern __weak u64 arch_perf_get_page_size(struct mm_struct *mm, unsigned long addr);
+#endif
 
 #endif /* _LINUX_PERF_EVENT_H */

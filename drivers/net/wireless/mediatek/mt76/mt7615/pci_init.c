@@ -16,8 +16,15 @@ static void mt7615_init_work(struct work_struct *work)
 {
 	struct mt7615_dev *dev = container_of(work, struct mt7615_dev,
 					      mcu_work);
+	int i, ret;
 
-	if (mt7615_mcu_init(dev))
+	ret = mt7615_mcu_init(dev);
+	for (i = 0; (ret == -EAGAIN) && (i < 10); i++) {
+		msleep(200);
+		ret = mt7615_mcu_init(dev);
+	}
+
+	if (ret)
 		return;
 
 	mt7615_mcu_set_eeprom(dev);
@@ -153,7 +160,9 @@ int mt7615_register_device(struct mt7615_dev *dev)
 
 void mt7615_unregister_device(struct mt7615_dev *dev)
 {
+	struct mt76_txwi_cache *txwi;
 	bool mcu_running;
+	int id;
 
 	mcu_running = mt7615_wait_for_mcu_init(dev);
 
@@ -163,7 +172,15 @@ void mt7615_unregister_device(struct mt7615_dev *dev)
 		mt7615_mcu_exit(dev);
 	mt7615_dma_cleanup(dev);
 
-	mt7615_tx_token_put(dev);
+	spin_lock_bh(&dev->token_lock);
+	idr_for_each_entry(&dev->token, txwi, id) {
+		mt7615_txp_skb_unmap(&dev->mt76, txwi);
+		if (txwi->skb)
+			dev_kfree_skb_any(txwi->skb);
+		mt76_put_txwi(&dev->mt76, txwi);
+	}
+	spin_unlock_bh(&dev->token_lock);
+	idr_destroy(&dev->token);
 
 	tasklet_disable(&dev->irq_tasklet);
 

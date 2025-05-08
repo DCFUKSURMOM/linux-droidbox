@@ -739,17 +739,11 @@ static struct wireless_dev *brcmf_cfg80211_add_iface(struct wiphy *wiphy,
 		return ERR_PTR(-EINVAL);
 	}
 
-	if (IS_ERR(wdev)) {
-		err = PTR_ERR(wdev);
-		if (err != -EBUSY)
-			bphy_err(drvr, "add iface %s type %d failed: err=%d\n", name,
-				 type, err);
-		else
-			brcmf_dbg(INFO, "add iface %s type %d failed: err=%d\n",
-				  name, type, err);
-	} else {
+	if (IS_ERR(wdev))
+		bphy_err(drvr, "add iface %s type %d failed: err=%d\n", name,
+			 type, (int)PTR_ERR(wdev));
+	else
 		brcmf_cfg80211_update_proto_addr_mode(wdev);
-	}
 
 	return wdev;
 }
@@ -2923,8 +2917,6 @@ brcmf_cfg80211_set_power_mgmt(struct wiphy *wiphy, struct net_device *ndev,
 
 	brcmf_dbg(TRACE, "Enter\n");
 
-	enabled = false;
-
 	/*
 	 * Powersave enable/disable request is coming from the
 	 * cfg80211 even before the interface is up. In that
@@ -2975,6 +2967,7 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 	struct brcmu_chan ch;
 	u16 channel;
 	u32 freq;
+	u64 notify_timestamp;
 	u16 notify_capability;
 	u16 notify_interval;
 	u8 *notify_ie;
@@ -3003,6 +2996,7 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 	bss_data.scan_width = NL80211_BSS_CHAN_WIDTH_20;
 	bss_data.boottime_ns = ktime_to_ns(ktime_get_boottime());
 
+	notify_timestamp = ktime_to_us(ktime_get_boottime());
 	notify_capability = le16_to_cpu(bi->capability);
 	notify_interval = le16_to_cpu(bi->beacon_period);
 	notify_ie = (u8 *)bi + le16_to_cpu(bi->ie_offset);
@@ -3014,12 +3008,12 @@ static s32 brcmf_inform_single_bss(struct brcmf_cfg80211_info *cfg,
 	brcmf_dbg(CONN, "Capability: %X\n", notify_capability);
 	brcmf_dbg(CONN, "Beacon interval: %d\n", notify_interval);
 	brcmf_dbg(CONN, "Signal: %d\n", bss_data.signal);
-	brcmf_dbg(CONN, "Timestamp: %llu\n", bss_data.boottime_ns);
+	brcmf_dbg(CONN, "Timestamp: %llu\n", notify_timestamp);
 
 	bss = cfg80211_inform_bss_data(wiphy, &bss_data,
 				       CFG80211_BSS_FTYPE_UNKNOWN,
 				       (const u8 *)bi->BSSID,
-				       bss_data.boottime_ns, notify_capability,
+				       notify_timestamp, notify_capability,
 				       notify_interval, notify_ie,
 				       notify_ielen, GFP_KERNEL);
 
@@ -5623,8 +5617,7 @@ static bool brcmf_is_linkup(struct brcmf_cfg80211_vif *vif,
 	return false;
 }
 
-static bool brcmf_is_linkdown(struct brcmf_cfg80211_vif *vif,
-			    const struct brcmf_event_msg *e)
+static bool brcmf_is_linkdown(const struct brcmf_event_msg *e)
 {
 	u32 event = e->event_code;
 	u16 flags = e->flags;
@@ -5633,8 +5626,6 @@ static bool brcmf_is_linkdown(struct brcmf_cfg80211_vif *vif,
 	    (event == BRCMF_E_DISASSOC_IND) ||
 	    ((event == BRCMF_E_LINK) && (!(flags & BRCMF_EVENT_MSG_LINK)))) {
 		brcmf_dbg(CONN, "Processing link down\n");
-		clear_bit(BRCMF_VIF_STATUS_EAP_SUCCESS, &vif->sme_state);
-		clear_bit(BRCMF_VIF_STATUS_ASSOC_SUCCESS, &vif->sme_state);
 		return true;
 	}
 	return false;
@@ -6082,7 +6073,7 @@ brcmf_notify_connect_status(struct brcmf_if *ifp,
 		} else
 			brcmf_bss_connect_done(cfg, ndev, e, true);
 		brcmf_net_setcarrier(ifp, true);
-	} else if (brcmf_is_linkdown(ifp->vif, e)) {
+	} else if (brcmf_is_linkdown(e)) {
 		brcmf_dbg(CONN, "Linkdown\n");
 		if (!brcmf_is_ibssmode(ifp->vif) &&
 		    test_bit(BRCMF_VIF_STATUS_CONNECTED,

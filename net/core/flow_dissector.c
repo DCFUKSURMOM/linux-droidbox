@@ -48,7 +48,7 @@ void skb_flow_dissector_init(struct flow_dissector *flow_dissector,
 	memset(flow_dissector, 0, sizeof(*flow_dissector));
 
 	for (i = 0; i < key_count; i++, key++) {
-		/* User should make sure that every key target offset is withing
+		/* User should make sure that every key target offset is within
 		 * boundaries of unsigned short.
 		 */
 		BUG_ON(key->offset > USHRT_MAX);
@@ -175,7 +175,7 @@ void skb_flow_get_icmp_tci(const struct sk_buff *skb,
 	 * avoid confusion with packets without such field
 	 */
 	if (icmp_has_id(ih->type))
-		key_icmp->id = ih->un.echo.id ? ntohs(ih->un.echo.id) : 1;
+		key_icmp->id = ih->un.echo.id ? : 1;
 	else
 		key_icmp->id = 0;
 }
@@ -1050,9 +1050,6 @@ proto_again:
 			key_control->addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
 		}
 
-		__skb_flow_dissect_ipv4(skb, flow_dissector,
-					target_container, data, iph);
-
 		if (ip_is_fragment(iph)) {
 			key_control->flags |= FLOW_DIS_IS_FRAGMENT;
 
@@ -1068,6 +1065,9 @@ proto_again:
 				}
 			}
 		}
+
+		__skb_flow_dissect_ipv4(skb, flow_dissector,
+					target_container, data, iph);
 
 		break;
 	}

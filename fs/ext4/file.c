@@ -36,11 +36,9 @@
 #include "acl.h"
 #include "truncate.h"
 
-static bool ext4_dio_supported(struct kiocb *iocb, struct iov_iter *iter)
+static bool ext4_dio_supported(struct inode *inode)
 {
-	struct inode *inode = file_inode(iocb->ki_filp);
-
-	if (!fscrypt_dio_supported(iocb, iter))
+	if (IS_ENABLED(CONFIG_FS_ENCRYPTION) && IS_ENCRYPTED(inode))
 		return false;
 	if (fsverity_active(inode))
 		return false;
@@ -63,7 +61,7 @@ static ssize_t ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 		inode_lock_shared(inode);
 	}
 
-	if (!ext4_dio_supported(iocb, to)) {
+	if (!ext4_dio_supported(inode)) {
 		inode_unlock_shared(inode);
 		/*
 		 * Fallback to buffered I/O if the operation being performed on
@@ -497,7 +495,7 @@ static ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	}
 
 	/* Fallback to buffered I/O if the inode does not support direct I/O. */
-	if (!ext4_dio_supported(iocb, from)) {
+	if (!ext4_dio_supported(inode)) {
 		if (ilock_shared)
 			inode_unlock_shared(inode);
 		else
@@ -811,9 +809,12 @@ static int ext4_sample_last_mounted(struct super_block *sb,
 	err = ext4_journal_get_write_access(handle, sbi->s_sbh);
 	if (err)
 		goto out_journal;
+	lock_buffer(sbi->s_sbh);
 	strncpy(sbi->s_es->s_last_mounted, cp,
 		sizeof(sbi->s_es->s_last_mounted));
-	ext4_handle_dirty_super(handle, sb);
+	ext4_superblock_csum_set(sb);
+	unlock_buffer(sbi->s_sbh);
+	ext4_handle_dirty_metadata(handle, NULL, sbi->s_sbh);
 out_journal:
 	ext4_journal_stop(handle);
 out:

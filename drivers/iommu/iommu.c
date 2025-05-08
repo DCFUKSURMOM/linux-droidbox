@@ -8,7 +8,6 @@
 
 #include <linux/device.h>
 #include <linux/kernel.h>
-#include <linux/bits.h>
 #include <linux/bug.h>
 #include <linux/types.h>
 #include <linux/init.h>
@@ -94,6 +93,8 @@ static void __iommu_detach_group(struct iommu_domain *domain,
 static int iommu_create_device_direct_mappings(struct iommu_group *group,
 					       struct device *dev);
 static struct iommu_group *iommu_group_get_for_dev(struct device *dev);
+static ssize_t iommu_group_store_type(struct iommu_group *group,
+				      const char *buf, size_t count);
 
 #define IOMMU_GROUP_ATTR(_name, _mode, _show, _store)		\
 struct iommu_group_attribute iommu_group_attr_##_name =		\
@@ -254,8 +255,10 @@ int iommu_probe_device(struct device *dev)
 		goto err_out;
 
 	group = iommu_group_get(dev);
-	if (!group)
+	if (!group) {
+		ret = -ENODEV;
 		goto err_release;
+	}
 
 	/*
 	 * Try to allocate a default domain - needs support from the
@@ -502,6 +505,7 @@ static ssize_t iommu_group_show_type(struct iommu_group *group,
 {
 	char *type = "unknown\n";
 
+	mutex_lock(&group->mutex);
 	if (group->default_domain) {
 		switch (group->default_domain->type) {
 		case IOMMU_DOMAIN_BLOCKED:
@@ -518,6 +522,7 @@ static ssize_t iommu_group_show_type(struct iommu_group *group,
 			break;
 		}
 	}
+	mutex_unlock(&group->mutex);
 	strcpy(buf, type);
 
 	return strlen(type);
@@ -528,7 +533,8 @@ static IOMMU_GROUP_ATTR(name, S_IRUGO, iommu_group_show_name, NULL);
 static IOMMU_GROUP_ATTR(reserved_regions, 0444,
 			iommu_group_show_resv_regions, NULL);
 
-static IOMMU_GROUP_ATTR(type, 0444, iommu_group_show_type, NULL);
+static IOMMU_GROUP_ATTR(type, 0644, iommu_group_show_type,
+			iommu_group_store_type);
 
 static void iommu_group_release(struct kobject *kobj)
 {
@@ -740,6 +746,7 @@ static int iommu_create_device_direct_mappings(struct iommu_group *group,
 	/* We need to consider overlapping regions for different devices */
 	list_for_each_entry(entry, &mappings, list) {
 		dma_addr_t start, end, addr;
+		size_t map_size = 0;
 
 		if (domain->ops->apply_resv_region)
 			domain->ops->apply_resv_region(dev, domain, entry);
@@ -751,16 +758,27 @@ static int iommu_create_device_direct_mappings(struct iommu_group *group,
 		    entry->type != IOMMU_RESV_DIRECT_RELAXABLE)
 			continue;
 
-		for (addr = start; addr < end; addr += pg_size) {
+		for (addr = start; addr <= end; addr += pg_size) {
 			phys_addr_t phys_addr;
 
-			phys_addr = iommu_iova_to_phys(domain, addr);
-			if (phys_addr)
-				continue;
+			if (addr == end)
+				goto map_end;
 
-			ret = iommu_map(domain, addr, addr, pg_size, entry->prot);
-			if (ret)
-				goto out;
+			phys_addr = iommu_iova_to_phys(domain, addr);
+			if (!phys_addr) {
+				map_size += pg_size;
+				continue;
+			}
+
+map_end:
+			if (map_size) {
+				ret = iommu_map(domain, addr - map_size,
+						addr - map_size, map_size,
+						entry->prot);
+				if (ret)
+					goto out;
+				map_size = 0;
+			}
 		}
 
 	}
@@ -1463,12 +1481,14 @@ EXPORT_SYMBOL_GPL(fsl_mc_device_group);
 static int iommu_get_def_domain_type(struct device *dev)
 {
 	const struct iommu_ops *ops = dev->bus->iommu_ops;
-	unsigned int type = 0;
+
+	if (dev_is_pci(dev) && to_pci_dev(dev)->untrusted)
+		return IOMMU_DOMAIN_DMA;
 
 	if (ops->def_domain_type)
-		type = ops->def_domain_type(dev);
+		return ops->def_domain_type(dev);
 
-	return (type == 0) ? iommu_def_domain_type : type;
+	return 0;
 }
 
 static int iommu_group_alloc_default_domain(struct bus_type *bus,
@@ -1510,7 +1530,7 @@ static int iommu_alloc_default_domain(struct iommu_group *group,
 	if (group->default_domain)
 		return 0;
 
-	type = iommu_get_def_domain_type(dev);
+	type = iommu_get_def_domain_type(dev) ? : iommu_def_domain_type;
 
 	return iommu_group_alloc_default_domain(dev->bus, group, type);
 }
@@ -1648,12 +1668,8 @@ struct __group_domain_type {
 
 static int probe_get_default_domain_type(struct device *dev, void *data)
 {
-	const struct iommu_ops *ops = dev->bus->iommu_ops;
 	struct __group_domain_type *gtype = data;
-	unsigned int type = 0;
-
-	if (ops->def_domain_type)
-		type = ops->def_domain_type(dev);
+	unsigned int type = iommu_get_def_domain_type(dev);
 
 	if (type) {
 		if (gtype->type && gtype->type != type) {
@@ -2330,83 +2346,36 @@ phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 }
 EXPORT_SYMBOL_GPL(iommu_iova_to_phys);
 
-static size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
-			   phys_addr_t paddr, size_t size, size_t *count)
+static size_t iommu_pgsize(struct iommu_domain *domain,
+			   unsigned long addr_merge, size_t size)
 {
-	unsigned int pgsize_idx, pgsize_idx_next;
-	unsigned long pgsizes;
-	size_t offset, pgsize, pgsize_next;
-	unsigned long addr_merge = paddr | iova;
+	unsigned int pgsize_idx;
+	size_t pgsize;
 
-	/* Page sizes supported by the hardware and small enough for @size */
-	pgsizes = domain->pgsize_bitmap & GENMASK(__fls(size), 0);
+	/* Max page size that still fits into 'size' */
+	pgsize_idx = __fls(size);
 
-	/* Constrain the page sizes further based on the maximum alignment */
-	if (likely(addr_merge))
-		pgsizes &= GENMASK(__ffs(addr_merge), 0);
-
-	/* Make sure we have at least one suitable page size */
-	BUG_ON(!pgsizes);
-
-	/* Pick the biggest page size remaining */
-	pgsize_idx = __fls(pgsizes);
-	pgsize = BIT(pgsize_idx);
-	if (!count)
-		return pgsize;
-
-
-	/* Find the next biggest support page size, if it exists */
-	pgsizes = domain->pgsize_bitmap & ~GENMASK(pgsize_idx, 0);
-	if (!pgsizes)
-		goto out_set_count;
-
-	pgsize_idx_next = __ffs(pgsizes);
-	pgsize_next = BIT(pgsize_idx_next);
-
-	/*
-	 * There's no point trying a bigger page size unless the virtual
-	 * and physical addresses are similarly offset within the larger page.
-	 */
-	if ((iova ^ paddr) & (pgsize_next - 1))
-		goto out_set_count;
-
-	/* Calculate the offset to the next page size alignment boundary */
-	offset = pgsize_next - (addr_merge & (pgsize_next - 1));
-
-	/*
-	 * If size is big enough to accommodate the larger page, reduce
-	 * the number of smaller pages.
-	 */
-	if (offset + pgsize_next <= size)
-		size = offset;
-
-out_set_count:
-	*count = size >> pgsize_idx;
-	return pgsize;
-}
-
-static int __iommu_map_pages(struct iommu_domain *domain, unsigned long iova,
-			     phys_addr_t paddr, size_t size, int prot,
-			     gfp_t gfp, size_t *mapped)
-{
-	const struct iommu_ops *ops = domain->ops;
-	size_t pgsize, count;
-	int ret;
-
-	pgsize = iommu_pgsize(domain, iova, paddr, size, &count);
-
-	pr_debug("mapping: iova 0x%lx pa %pa pgsize 0x%zx count %zu\n",
-			 iova, &paddr, pgsize, count);
-
-	if (ops->map_pages) {
-		ret = ops->map_pages(domain, iova, paddr, pgsize, count, prot,
-				     gfp, mapped);
-	} else {
-		ret = ops->map(domain, iova, paddr, pgsize, prot, gfp);
-		*mapped = ret ? 0 : pgsize;
+	/* need to consider alignment requirements ? */
+	if (likely(addr_merge)) {
+		/* Max page size allowed by address */
+		unsigned int align_pgsize_idx = __ffs(addr_merge);
+		pgsize_idx = min(pgsize_idx, align_pgsize_idx);
 	}
 
-	return ret;
+	/* build a mask of acceptable page sizes */
+	pgsize = (1UL << (pgsize_idx + 1)) - 1;
+
+	/* throw away page sizes not supported by the hardware */
+	pgsize &= domain->pgsize_bitmap;
+
+	/* make sure we're still sane */
+	BUG_ON(!pgsize);
+
+	/* pick the biggest page */
+	pgsize_idx = __fls(pgsize);
+	pgsize = 1UL << pgsize_idx;
+
+	return pgsize;
 }
 
 static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
@@ -2419,7 +2388,7 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 	phys_addr_t orig_paddr = paddr;
 	int ret = 0;
 
-	if (unlikely(!(ops->map || ops->map_pages) ||
+	if (unlikely(ops->map == NULL ||
 		     domain->pgsize_bitmap == 0UL))
 		return -ENODEV;
 
@@ -2443,22 +2412,22 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 	pr_debug("map: iova 0x%lx pa %pa size 0x%zx\n", iova, &paddr, size);
 
 	while (size) {
-		size_t mapped = 0;
+		size_t pgsize = iommu_pgsize(domain, iova | paddr, size);
 
-		ret = __iommu_map_pages(domain, iova, paddr, size, prot, gfp,
-					&mapped);
-		/*
-		 * Some pages may have been mapped, even if an error occurred,
-		 * so we should account for those so they can be unmapped.
-		 */
-		size -= mapped;
+		pr_debug("mapping: iova 0x%lx pa %pa pgsize 0x%zx\n",
+			 iova, &paddr, pgsize);
+		ret = ops->map(domain, iova, paddr, pgsize, prot, gfp);
 
 		if (ret)
 			break;
 
-		iova += mapped;
-		paddr += mapped;
+		iova += pgsize;
+		paddr += pgsize;
+		size -= pgsize;
 	}
+
+	if (ops->iotlb_sync_map)
+		ops->iotlb_sync_map(domain);
 
 	/* unroll mapping in case something went wrong */
 	if (ret)
@@ -2469,46 +2438,20 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 	return ret;
 }
 
-static int _iommu_map(struct iommu_domain *domain, unsigned long iova,
-		      phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
-{
-	const struct iommu_ops *ops = domain->ops;
-	int ret;
-
-	ret = __iommu_map(domain, iova, paddr, size, prot, gfp);
-	if (ret == 0 && ops->iotlb_sync_map)
-		ops->iotlb_sync_map(domain, iova, size);
-
-	return ret;
-}
-
 int iommu_map(struct iommu_domain *domain, unsigned long iova,
 	      phys_addr_t paddr, size_t size, int prot)
 {
 	might_sleep();
-	return _iommu_map(domain, iova, paddr, size, prot, GFP_KERNEL);
+	return __iommu_map(domain, iova, paddr, size, prot, GFP_KERNEL);
 }
 EXPORT_SYMBOL_GPL(iommu_map);
 
 int iommu_map_atomic(struct iommu_domain *domain, unsigned long iova,
 	      phys_addr_t paddr, size_t size, int prot)
 {
-	return _iommu_map(domain, iova, paddr, size, prot, GFP_ATOMIC);
+	return __iommu_map(domain, iova, paddr, size, prot, GFP_ATOMIC);
 }
 EXPORT_SYMBOL_GPL(iommu_map_atomic);
-
-static size_t __iommu_unmap_pages(struct iommu_domain *domain,
-				  unsigned long iova, size_t size,
-				  struct iommu_iotlb_gather *iotlb_gather)
-{
-	const struct iommu_ops *ops = domain->ops;
-	size_t pgsize, count;
-
-	pgsize = iommu_pgsize(domain, iova, iova, size, &count);
-	return ops->unmap_pages ?
-	       ops->unmap_pages(domain, iova, pgsize, count, iotlb_gather) :
-	       ops->unmap(domain, iova, pgsize, iotlb_gather);
-}
 
 static size_t __iommu_unmap(struct iommu_domain *domain,
 			    unsigned long iova, size_t size,
@@ -2519,7 +2462,7 @@ static size_t __iommu_unmap(struct iommu_domain *domain,
 	unsigned long orig_iova = iova;
 	unsigned int min_pagesz;
 
-	if (unlikely(!(ops->unmap || ops->unmap_pages) ||
+	if (unlikely(ops->unmap == NULL ||
 		     domain->pgsize_bitmap == 0UL))
 		return 0;
 
@@ -2547,9 +2490,9 @@ static size_t __iommu_unmap(struct iommu_domain *domain,
 	 * or we hit an area that isn't mapped.
 	 */
 	while (unmapped < size) {
-		unmapped_page = __iommu_unmap_pages(domain, iova,
-						    size - unmapped,
-						    iotlb_gather);
+		size_t pgsize = iommu_pgsize(domain, iova, size - unmapped);
+
+		unmapped_page = ops->unmap(domain, iova, pgsize, iotlb_gather);
 		if (!unmapped_page)
 			break;
 
@@ -2590,23 +2533,10 @@ static size_t __iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 			     struct scatterlist *sg, unsigned int nents, int prot,
 			     gfp_t gfp)
 {
-	const struct iommu_ops *ops = domain->ops;
 	size_t len = 0, mapped = 0;
 	phys_addr_t start;
 	unsigned int i = 0;
 	int ret;
-
-	if (ops->map_sg) {
-		ret = ops->map_sg(domain, iova, sg, nents, prot, gfp, &mapped);
-
-		if (ops->iotlb_sync_map)
-			ops->iotlb_sync_map(domain, iova, mapped);
-
-		if (ret)
-			goto out_err;
-
-		return mapped;
-	}
 
 	while (i <= nents) {
 		phys_addr_t s_phys = sg_phys(sg);
@@ -2633,8 +2563,6 @@ static size_t __iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 			sg = sg_next(sg);
 	}
 
-	if (ops->iotlb_sync_map)
-		ops->iotlb_sync_map(domain, iova, mapped);
 	return mapped;
 
 out_err:
@@ -3086,8 +3014,6 @@ EXPORT_SYMBOL_GPL(iommu_sva_bind_device);
  * Put reference to a bond between device and address space. The device should
  * not be issuing any more transaction for this PASID. All outstanding page
  * requests for this PASID must have been flushed to the IOMMU.
- *
- * Returns 0 on success, or an error value
  */
 void iommu_sva_unbind_device(struct iommu_sva *handle)
 {
@@ -3120,3 +3046,228 @@ u32 iommu_sva_get_pasid(struct iommu_sva *handle)
 	return ops->sva_get_pasid(handle);
 }
 EXPORT_SYMBOL_GPL(iommu_sva_get_pasid);
+
+/*
+ * Changes the default domain of an iommu group that has *only* one device
+ *
+ * @group: The group for which the default domain should be changed
+ * @prev_dev: The device in the group (this is used to make sure that the device
+ *	 hasn't changed after the caller has called this function)
+ * @type: The type of the new default domain that gets associated with the group
+ *
+ * Returns 0 on success and error code on failure
+ *
+ * Note:
+ * 1. Presently, this function is called only when user requests to change the
+ *    group's default domain type through /sys/kernel/iommu_groups/<grp_id>/type
+ *    Please take a closer look if intended to use for other purposes.
+ */
+static int iommu_change_dev_def_domain(struct iommu_group *group,
+				       struct device *prev_dev, int type)
+{
+	struct iommu_domain *prev_dom;
+	struct group_device *grp_dev;
+	int ret, dev_def_dom;
+	struct device *dev;
+
+	if (!group)
+		return -EINVAL;
+
+	mutex_lock(&group->mutex);
+
+	if (group->default_domain != group->domain) {
+		dev_err_ratelimited(prev_dev, "Group not assigned to default domain\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	/*
+	 * iommu group wasn't locked while acquiring device lock in
+	 * iommu_group_store_type(). So, make sure that the device count hasn't
+	 * changed while acquiring device lock.
+	 *
+	 * Changing default domain of an iommu group with two or more devices
+	 * isn't supported because there could be a potential deadlock. Consider
+	 * the following scenario. T1 is trying to acquire device locks of all
+	 * the devices in the group and before it could acquire all of them,
+	 * there could be another thread T2 (from different sub-system and use
+	 * case) that has already acquired some of the device locks and might be
+	 * waiting for T1 to release other device locks.
+	 */
+	if (iommu_group_device_count(group) != 1) {
+		dev_err_ratelimited(prev_dev, "Cannot change default domain: Group has more than one device\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* Since group has only one device */
+	grp_dev = list_first_entry(&group->devices, struct group_device, list);
+	dev = grp_dev->dev;
+
+	if (prev_dev != dev) {
+		dev_err_ratelimited(prev_dev, "Cannot change default domain: Device has been changed\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	prev_dom = group->default_domain;
+	if (!prev_dom) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	dev_def_dom = iommu_get_def_domain_type(dev);
+	if (!type) {
+		/*
+		 * If the user hasn't requested any specific type of domain and
+		 * if the device supports both the domains, then default to the
+		 * domain the device was booted with
+		 */
+		type = dev_def_dom ? : iommu_def_domain_type;
+	} else if (dev_def_dom && type != dev_def_dom) {
+		dev_err_ratelimited(prev_dev, "Device cannot be in %s domain\n",
+				    iommu_domain_type_str(type));
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/*
+	 * Switch to a new domain only if the requested domain type is different
+	 * from the existing default domain type
+	 */
+	if (prev_dom->type == type) {
+		ret = 0;
+		goto out;
+	}
+
+	/* Sets group->default_domain to the newly allocated domain */
+	ret = iommu_group_alloc_default_domain(dev->bus, group, type);
+	if (ret)
+		goto out;
+
+	ret = iommu_create_device_direct_mappings(group, dev);
+	if (ret)
+		goto free_new_domain;
+
+	ret = __iommu_attach_device(group->default_domain, dev);
+	if (ret)
+		goto free_new_domain;
+
+	group->domain = group->default_domain;
+
+	/*
+	 * Release the mutex here because ops->probe_finalize() call-back of
+	 * some vendor IOMMU drivers calls arm_iommu_attach_device() which
+	 * in-turn might call back into IOMMU core code, where it tries to take
+	 * group->mutex, resulting in a deadlock.
+	 */
+	mutex_unlock(&group->mutex);
+
+	/* Make sure dma_ops is appropriatley set */
+	iommu_group_do_probe_finalize(dev, group->default_domain);
+	iommu_domain_free(prev_dom);
+	return 0;
+
+free_new_domain:
+	iommu_domain_free(group->default_domain);
+	group->default_domain = prev_dom;
+	group->domain = prev_dom;
+
+out:
+	mutex_unlock(&group->mutex);
+
+	return ret;
+}
+
+/*
+ * Changing the default domain through sysfs requires the users to ubind the
+ * drivers from the devices in the iommu group. Return failure if this doesn't
+ * meet.
+ *
+ * We need to consider the race between this and the device release path.
+ * device_lock(dev) is used here to guarantee that the device release path
+ * will not be entered at the same time.
+ */
+static ssize_t iommu_group_store_type(struct iommu_group *group,
+				      const char *buf, size_t count)
+{
+	struct group_device *grp_dev;
+	struct device *dev;
+	int ret, req_type;
+
+	if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_RAWIO))
+		return -EACCES;
+
+	if (WARN_ON(!group))
+		return -EINVAL;
+
+	if (sysfs_streq(buf, "identity"))
+		req_type = IOMMU_DOMAIN_IDENTITY;
+	else if (sysfs_streq(buf, "DMA"))
+		req_type = IOMMU_DOMAIN_DMA;
+	else if (sysfs_streq(buf, "auto"))
+		req_type = 0;
+	else
+		return -EINVAL;
+
+	/*
+	 * Lock/Unlock the group mutex here before device lock to
+	 * 1. Make sure that the iommu group has only one device (this is a
+	 *    prerequisite for step 2)
+	 * 2. Get struct *dev which is needed to lock device
+	 */
+	mutex_lock(&group->mutex);
+	if (iommu_group_device_count(group) != 1) {
+		mutex_unlock(&group->mutex);
+		pr_err_ratelimited("Cannot change default domain: Group has more than one device\n");
+		return -EINVAL;
+	}
+
+	/* Since group has only one device */
+	grp_dev = list_first_entry(&group->devices, struct group_device, list);
+	dev = grp_dev->dev;
+	get_device(dev);
+
+	/*
+	 * Don't hold the group mutex because taking group mutex first and then
+	 * the device lock could potentially cause a deadlock as below. Assume
+	 * two threads T1 and T2. T1 is trying to change default domain of an
+	 * iommu group and T2 is trying to hot unplug a device or release [1] VF
+	 * of a PCIe device which is in the same iommu group. T1 takes group
+	 * mutex and before it could take device lock assume T2 has taken device
+	 * lock and is yet to take group mutex. Now, both the threads will be
+	 * waiting for the other thread to release lock. Below, lock order was
+	 * suggested.
+	 * device_lock(dev);
+	 *	mutex_lock(&group->mutex);
+	 *		iommu_change_dev_def_domain();
+	 *	mutex_unlock(&group->mutex);
+	 * device_unlock(dev);
+	 *
+	 * [1] Typical device release path
+	 * device_lock() from device/driver core code
+	 *  -> bus_notifier()
+	 *   -> iommu_bus_notifier()
+	 *    -> iommu_release_device()
+	 *     -> ops->release_device() vendor driver calls back iommu core code
+	 *      -> mutex_lock() from iommu core code
+	 */
+	mutex_unlock(&group->mutex);
+
+	/* Check if the device in the group still has a driver bound to it */
+	device_lock(dev);
+	if (device_is_bound(dev)) {
+		pr_err_ratelimited("Device is still bound to driver\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	ret = iommu_change_dev_def_domain(group, dev, req_type);
+	ret = ret ?: count;
+
+out:
+	device_unlock(dev);
+	put_device(dev);
+
+	return ret;
+}

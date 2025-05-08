@@ -26,6 +26,7 @@
 #include <linux/acpi.h>
 #include <linux/firmware.h>
 #include <crypto/hash.h>
+#include <linux/usb/r8152.h>
 
 /* Information for net-next */
 #define NETNEXT_VERSION		"11"
@@ -653,18 +654,6 @@ enum rtl_register_content {
 
 #define INTR_LINK		0x0004
 
-#define RTL8152_REQT_READ	0xc0
-#define RTL8152_REQT_WRITE	0x40
-#define RTL8152_REQ_GET_REGS	0x05
-#define RTL8152_REQ_SET_REGS	0x05
-
-#define BYTE_EN_DWORD		0xff
-#define BYTE_EN_WORD		0x33
-#define BYTE_EN_BYTE		0x11
-#define BYTE_EN_SIX_BYTES	0x3f
-#define BYTE_EN_START_MASK	0x0f
-#define BYTE_EN_END_MASK	0xf0
-
 #define RTL8153_MAX_PACKET	9216 /* 9K */
 #define RTL8153_MAX_MTU		(RTL8153_MAX_PACKET - VLAN_ETH_HLEN - \
 				 ETH_FCS_LEN)
@@ -689,20 +678,8 @@ enum rtl8152_flags {
 	LENOVO_MACPASSTHRU,
 };
 
-/* Define these values to match your device */
-#define VENDOR_ID_REALTEK		0x0bda
-#define VENDOR_ID_MICROSOFT		0x045e
-#define VENDOR_ID_SAMSUNG		0x04e8
-#define VENDOR_ID_LENOVO		0x17ef
-#define VENDOR_ID_LINKSYS		0x13b1
-#define VENDOR_ID_NVIDIA		0x0955
-#define VENDOR_ID_TPLINK		0x2357
-
 #define DEVICE_ID_THINKPAD_THUNDERBOLT3_DOCK_GEN2	0x3082
 #define DEVICE_ID_THINKPAD_USB_C_DOCK_GEN2		0xa387
-
-#define MCU_TYPE_PLA			0x0100
-#define MCU_TYPE_USB			0x0000
 
 struct tally_counter {
 	__le64	tx_packets;
@@ -898,6 +875,7 @@ struct fw_header {
  * struct fw_mac - a firmware block used by RTL_FW_PLA and RTL_FW_USB.
  *	The layout of the firmware block is:
  *	<struct fw_mac> + <info> + <firmware data>.
+ * @blk_hdr: firmware descriptor (type, length)
  * @fw_offset: offset of the firmware binary data. The start address of
  *	the data would be the address of struct fw_mac + @fw_offset.
  * @fw_reg: the register to load the firmware. Depends on chip.
@@ -911,6 +889,7 @@ struct fw_header {
  * @bp_num: the break point number which needs to be set for this firmware.
  *	Depends on the firmware.
  * @bp: break points. Depends on firmware.
+ * @reserved: reserved space (unused)
  * @fw_ver_reg: the register to store the fw version.
  * @fw_ver_data: the firmware version of the current type.
  * @info: additional information for debugging, and is followed by the
@@ -936,8 +915,10 @@ struct fw_mac {
 /**
  * struct fw_phy_patch_key - a firmware block used by RTL_FW_PHY_START.
  *	This is used to set patch key when loading the firmware of PHY.
+ * @blk_hdr: firmware descriptor (type, length)
  * @key_reg: the register to write the patch key.
  * @key_data: patch key.
+ * @reserved: reserved space (unused)
  */
 struct fw_phy_patch_key {
 	struct fw_block blk_hdr;
@@ -950,6 +931,7 @@ struct fw_phy_patch_key {
  * struct fw_phy_nc - a firmware block used by RTL_FW_PHY_NC.
  *	The layout of the firmware block is:
  *	<struct fw_phy_nc> + <info> + <firmware data>.
+ * @blk_hdr: firmware descriptor (type, length)
  * @fw_offset: offset of the firmware binary data. The start address of
  *	the data would be the address of struct fw_phy_nc + @fw_offset.
  * @fw_reg: the register to load the firmware. Depends on chip.
@@ -958,8 +940,9 @@ struct fw_phy_patch_key {
  * @patch_en_addr: the register of enabling patch mode. Depends on chip.
  * @patch_en_value: patch mode enabled mask. Depends on the firmware.
  * @mode_reg: the regitster of switching the mode.
- * @mod_pre: the mode needing to be set before loading the firmware.
- * @mod_post: the mode to be set when finishing to load the firmware.
+ * @mode_pre: the mode needing to be set before loading the firmware.
+ * @mode_post: the mode to be set when finishing to load the firmware.
+ * @reserved: reserved space (unused)
  * @bp_start: the start register of break points. Depends on chip.
  * @bp_num: the break point number which needs to be set for this firmware.
  *	Depends on the firmware.
@@ -3033,6 +3016,29 @@ static void __rtl_set_wol(struct r8152 *tp, u32 wolopts)
 		device_set_wakeup_enable(&tp->udev->dev, false);
 }
 
+static void r8153_mac_clk_spd(struct r8152 *tp, bool enable)
+{
+	/* MAC clock speed down */
+	if (enable) {
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL,
+			       ALDPS_SPDWN_RATIO);
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL2,
+			       EEE_SPDWN_RATIO);
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL3,
+			       PKT_AVAIL_SPDWN_EN | SUSPEND_SPDWN_EN |
+			       U1U2_SPDWN_EN | L1_SPDWN_EN);
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4,
+			       PWRSAVE_SPDWN_EN | RXDV_SPDWN_EN | TX10MIDLE_EN |
+			       TP100_SPDWN_EN | TP500_SPDWN_EN | EEE_SPDWN_EN |
+			       TP1000_SPDWN_EN);
+	} else {
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL, 0);
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL2, 0);
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL3, 0);
+		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4, 0);
+	}
+}
+
 static void r8153_u1u2en(struct r8152 *tp, bool enable)
 {
 	u8 u1u2[8];
@@ -3332,9 +3338,11 @@ static void rtl8153_runtime_enable(struct r8152 *tp, bool enable)
 	if (enable) {
 		r8153_u1u2en(tp, false);
 		r8153_u2p3en(tp, false);
+		r8153_mac_clk_spd(tp, true);
 		rtl_runtime_suspend_enable(tp, true);
 	} else {
 		rtl_runtime_suspend_enable(tp, false);
+		r8153_mac_clk_spd(tp, false);
 
 		switch (tp->version) {
 		case RTL_VER_03:
@@ -4670,6 +4678,7 @@ static void r8153_first_init(struct r8152 *tp)
 {
 	u32 ocp_data;
 
+	r8153_mac_clk_spd(tp, false);
 	rxdy_gated_en(tp, true);
 	r8153_teredo_off(tp);
 
@@ -4719,6 +4728,8 @@ static void r8153_first_init(struct r8152 *tp)
 static void r8153_enter_oob(struct r8152 *tp)
 {
 	u32 ocp_data;
+
+	r8153_mac_clk_spd(tp, true);
 
 	ocp_data = ocp_read_byte(tp, MCU_TYPE_PLA, PLA_OOB_CTRL);
 	ocp_data &= ~NOW_IS_OOB;
@@ -5445,15 +5456,10 @@ static void r8153_init(struct r8152 *tp)
 
 	ocp_write_word(tp, MCU_TYPE_USB, USB_CONNECT_TIMER, 0x0001);
 
-	/* MAC clock speed down */
-	ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL, 0);
-	ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL2, 0);
-	ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL3, 0);
-	ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4, 0);
-
 	r8153_power_cut_en(tp, false);
 	rtl_runtime_suspend_enable(tp, false);
 	r8153_u1u2en(tp, true);
+	r8153_mac_clk_spd(tp, false);
 	usb_enable_lpm(tp->udev);
 
 	ocp_data = ocp_read_byte(tp, MCU_TYPE_PLA, PLA_CONFIG6);
@@ -6519,10 +6525,7 @@ static int rtl_ops_init(struct r8152 *tp)
 		ops->in_nway		= rtl8153_in_nway;
 		ops->hw_phy_cfg		= r8153_hw_phy_cfg;
 		ops->autosuspend_en	= rtl8153_runtime_enable;
-		if (tp->udev->speed < USB_SPEED_SUPER)
-			tp->rx_buf_sz	= 16 * 1024;
-		else
-			tp->rx_buf_sz	= 32 * 1024;
+		tp->rx_buf_sz		= 32 * 1024;
 		tp->eee_en		= true;
 		tp->eee_adv		= MDIO_EEE_1000T | MDIO_EEE_100TX;
 		break;
@@ -6595,7 +6598,7 @@ static int rtl_fw_init(struct r8152 *tp)
 	return 0;
 }
 
-static u8 rtl_get_version(struct usb_interface *intf)
+u8 rtl8152_get_version(struct usb_interface *intf)
 {
 	struct usb_device *udev = interface_to_usbdev(intf);
 	u32 ocp_data = 0;
@@ -6653,12 +6656,13 @@ static u8 rtl_get_version(struct usb_interface *intf)
 
 	return version;
 }
+EXPORT_SYMBOL_GPL(rtl8152_get_version);
 
 static int rtl8152_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
 	struct usb_device *udev = interface_to_usbdev(intf);
-	u8 version = rtl_get_version(intf);
+	u8 version = rtl8152_get_version(intf);
 	struct r8152 *tp;
 	struct net_device *netdev;
 	int ret;

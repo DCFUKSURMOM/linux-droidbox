@@ -161,7 +161,6 @@ extern int do_clock_adjtime(const clockid_t which_clock, struct __kernel_timex *
 extern void hardpps(const struct timespec64 *, const struct timespec64 *);
 
 int read_current_timer(unsigned long *timer_val);
-void ntp_notify_cmos_timer(void);
 
 #ifdef CONFIG_X86_XBOX
 #define PIT_TICK_RATE xbox_pit_tick_rate()

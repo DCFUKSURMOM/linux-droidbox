@@ -212,6 +212,18 @@ static const struct can_bittiming_const c_can_bittiming_const = {
 	.brp_inc = 1,
 };
 
+static inline void c_can_pm_runtime_enable(const struct c_can_priv *priv)
+{
+	if (priv->device)
+		pm_runtime_enable(priv->device);
+}
+
+static inline void c_can_pm_runtime_disable(const struct c_can_priv *priv)
+{
+	if (priv->device)
+		pm_runtime_disable(priv->device);
+}
+
 static inline void c_can_pm_runtime_get_sync(const struct c_can_priv *priv)
 {
 	if (priv->device)
@@ -294,7 +306,7 @@ static void c_can_setup_tx_object(struct net_device *dev, int iface,
 				  struct can_frame *frame, int idx)
 {
 	struct c_can_priv *priv = netdev_priv(dev);
-	u16 ctrl = IF_MCONT_TX | frame->can_dlc;
+	u16 ctrl = IF_MCONT_TX | frame->len;
 	bool rtr = frame->can_id & CAN_RTR_FLAG;
 	u32 arb = IF_ARB_MSGVAL;
 	int i;
@@ -327,7 +339,7 @@ static void c_can_setup_tx_object(struct net_device *dev, int iface,
 	if (priv->type == BOSCH_D_CAN) {
 		u32 data = 0, dreg = C_CAN_IFACE(DATA1_REG, iface);
 
-		for (i = 0; i < frame->can_dlc; i += 4, dreg += 2) {
+		for (i = 0; i < frame->len; i += 4, dreg += 2) {
 			data = (u32)frame->data[i];
 			data |= (u32)frame->data[i + 1] << 8;
 			data |= (u32)frame->data[i + 2] << 16;
@@ -335,7 +347,7 @@ static void c_can_setup_tx_object(struct net_device *dev, int iface,
 			priv->write_reg32(priv, dreg, data);
 		}
 	} else {
-		for (i = 0; i < frame->can_dlc; i += 2) {
+		for (i = 0; i < frame->len; i += 2) {
 			priv->write_reg(priv,
 					C_CAN_IFACE(DATA1_REG, iface) + i / 2,
 					frame->data[i] |
@@ -385,7 +397,7 @@ static int c_can_read_msg_object(struct net_device *dev, int iface, u32 ctrl)
 		return -ENOMEM;
 	}
 
-	frame->can_dlc = get_can_dlc(ctrl & 0x0F);
+	frame->len = can_cc_dlc2len(ctrl & 0x0F);
 
 	arb = priv->read_reg32(priv, C_CAN_IFACE(ARB1_REG, iface));
 
@@ -400,7 +412,7 @@ static int c_can_read_msg_object(struct net_device *dev, int iface, u32 ctrl)
 		int i, dreg = C_CAN_IFACE(DATA1_REG, iface);
 
 		if (priv->type == BOSCH_D_CAN) {
-			for (i = 0; i < frame->can_dlc; i += 4, dreg += 2) {
+			for (i = 0; i < frame->len; i += 4, dreg += 2) {
 				data = priv->read_reg32(priv, dreg);
 				frame->data[i] = data;
 				frame->data[i + 1] = data >> 8;
@@ -408,7 +420,7 @@ static int c_can_read_msg_object(struct net_device *dev, int iface, u32 ctrl)
 				frame->data[i + 3] = data >> 24;
 			}
 		} else {
-			for (i = 0; i < frame->can_dlc; i += 2, dreg++) {
+			for (i = 0; i < frame->len; i += 2, dreg++) {
 				data = priv->read_reg(priv, dreg);
 				frame->data[i] = data;
 				frame->data[i + 1] = data >> 8;
@@ -417,7 +429,7 @@ static int c_can_read_msg_object(struct net_device *dev, int iface, u32 ctrl)
 	}
 
 	stats->rx_packets++;
-	stats->rx_bytes += frame->can_dlc;
+	stats->rx_bytes += frame->len;
 
 	netif_receive_skb(skb);
 	return 0;
@@ -463,7 +475,7 @@ static netdev_tx_t c_can_start_xmit(struct sk_buff *skb,
 	 * transmit as we might race against do_tx().
 	 */
 	c_can_setup_tx_object(dev, IF_TX, frame, idx);
-	priv->dlc[idx] = frame->can_dlc;
+	priv->dlc[idx] = frame->len;
 	can_put_echo_skb(skb, dev, idx);
 
 	/* Update the active bits */
@@ -965,7 +977,7 @@ static int c_can_handle_state_change(struct net_device *dev,
 	}
 
 	stats->rx_packets++;
-	stats->rx_bytes += cf->can_dlc;
+	stats->rx_bytes += cf->len;
 	netif_receive_skb(skb);
 
 	return 1;
@@ -1035,7 +1047,7 @@ static int c_can_handle_bus_err(struct net_device *dev,
 	}
 
 	stats->rx_packets++;
-	stats->rx_bytes += cf->can_dlc;
+	stats->rx_bytes += cf->len;
 	netif_receive_skb(skb);
 	return 1;
 }
@@ -1323,6 +1335,7 @@ static const struct net_device_ops c_can_netdev_ops = {
 
 int register_c_can_dev(struct net_device *dev)
 {
+	struct c_can_priv *priv = netdev_priv(dev);
 	int err;
 
 	/* Deactivate pins to prevent DRA7 DCAN IP from being
@@ -1332,19 +1345,28 @@ int register_c_can_dev(struct net_device *dev)
 	 */
 	pinctrl_pm_select_sleep_state(dev->dev.parent);
 
+	c_can_pm_runtime_enable(priv);
+
 	dev->flags |= IFF_ECHO;	/* we support local echo */
 	dev->netdev_ops = &c_can_netdev_ops;
 
 	err = register_candev(dev);
-	if (!err)
+	if (err)
+		c_can_pm_runtime_disable(priv);
+	else
 		devm_can_led_init(dev);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(register_c_can_dev);
 
 void unregister_c_can_dev(struct net_device *dev)
 {
+	struct c_can_priv *priv = netdev_priv(dev);
+
 	unregister_candev(dev);
+
+	c_can_pm_runtime_disable(priv);
 }
 EXPORT_SYMBOL_GPL(unregister_c_can_dev);
 

@@ -470,7 +470,7 @@ DEFINE_FIXED_SYMBOL(\name\()_common_real)
 
 	ld	r10,PACAKMSR(r13)	/* get MSR value for kernel */
 	/* MSR[RI] is clear iff using SRR regs */
-	.if IHSRR_IF_HVMODE
+	.if IHSRR == EXC_HV_OR_STD
 	BEGIN_FTR_SECTION
 	xori	r10,r10,MSR_RI
 	END_FTR_SECTION_IFCLR(CPU_FTR_HVMODE)
@@ -1059,7 +1059,7 @@ EXC_COMMON_BEGIN(system_reset_common)
 	ld	r10,SOFTE(r1)
 	stb	r10,PACAIRQSOFTMASK(r13)
 
-	kuap_restore_amr r9, r10
+	kuap_kernel_restore r9, r10
 	EXCEPTION_RESTORE_REGS
 	RFI_TO_USER_OR_KERNEL
 
@@ -2875,7 +2875,7 @@ EXC_COMMON_BEGIN(soft_nmi_common)
 	ld	r10,SOFTE(r1)
 	stb	r10,PACAIRQSOFTMASK(r13)
 
-	kuap_restore_amr r9, r10
+	kuap_kernel_restore r9, r10
 	EXCEPTION_RESTORE_REGS hsrr=0
 	RFI_TO_KERNEL
 
@@ -3278,7 +3278,7 @@ handle_page_fault:
 	mr	r5,r3
 	addi	r3,r1,STACK_FRAME_OVERHEAD
 	ld	r4,_DAR(r1)
-	bl	bad_page_fault
+	bl	__bad_page_fault
 	b	interrupt_return
 
 /* We have a data breakpoint exception - handle it */

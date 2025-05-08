@@ -229,33 +229,11 @@ int btrfs_setxattr_trans(struct inode *inode, const char *name,
 {
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	struct btrfs_trans_handle *trans;
-	const bool start_trans = (current->journal_info == NULL);
 	int ret;
 
-	if (start_trans) {
-		/*
-		 * 1 unit for inserting/updating/deleting the xattr
-		 * 1 unit for the inode item update
-		 */
-		trans = btrfs_start_transaction(root, 2);
-		if (IS_ERR(trans))
-			return PTR_ERR(trans);
-	} else {
-		/*
-		 * This can happen when smack is enabled and a directory is being
-		 * created. It happens through d_instantiate_new(), which calls
-		 * smack_d_instantiate(), which in turn calls __vfs_setxattr() to
-		 * set the transmute xattr (XATTR_NAME_SMACKTRANSMUTE) on the
-		 * inode. We have already reserved space for the xattr and inode
-		 * update at btrfs_mkdir(), so just use the transaction handle.
-		 * We don't join or start a transaction, as that will reset the
-		 * block_rsv of the handle and trigger a warning for the start
-		 * case.
-		 */
-		ASSERT(strncmp(name, XATTR_SECURITY_PREFIX,
-			       XATTR_SECURITY_PREFIX_LEN) == 0);
-		trans = current->journal_info;
-	}
+	trans = btrfs_start_transaction(root, 2);
+	if (IS_ERR(trans))
+		return PTR_ERR(trans);
 
 	ret = btrfs_setxattr(trans, inode, name, value, size, flags);
 	if (ret)
@@ -263,11 +241,10 @@ int btrfs_setxattr_trans(struct inode *inode, const char *name,
 
 	inode_inc_iversion(inode);
 	inode->i_ctime = current_time(inode);
-	ret = btrfs_update_inode(trans, root, inode);
+	ret = btrfs_update_inode(trans, root, BTRFS_I(inode));
 	BUG_ON(ret);
 out:
-	if (start_trans)
-		btrfs_end_transaction(trans);
+	btrfs_end_transaction(trans);
 	return ret;
 }
 
@@ -378,8 +355,7 @@ err:
 
 static int btrfs_xattr_handler_get(const struct xattr_handler *handler,
 				   struct dentry *unused, struct inode *inode,
-				   const char *name, void *buffer, size_t size,
-				   int flags)
+				   const char *name, void *buffer, size_t size)
 {
 	name = xattr_full_name(handler, name);
 	return btrfs_getxattr(inode, name, buffer, size);
@@ -416,7 +392,7 @@ static int btrfs_xattr_handler_set_prop(const struct xattr_handler *handler,
 	if (!ret) {
 		inode_inc_iversion(inode);
 		inode->i_ctime = current_time(inode);
-		ret = btrfs_update_inode(trans, root, inode);
+		ret = btrfs_update_inode(trans, root, BTRFS_I(inode));
 		BUG_ON(ret);
 	}
 

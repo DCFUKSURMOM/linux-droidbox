@@ -133,8 +133,6 @@ struct board_info {
 	u32		wake_state;
 
 	int		ip_summed;
-
-	struct regulator *power_supply;
 };
 
 /* debug code */
@@ -234,32 +232,29 @@ static void dm9000_inblk_32bit(void __iomem *reg, void *data, int count)
 static void dm9000_dumpblk_8bit(void __iomem *reg, int count)
 {
 	int i;
-	int tmp;
 
 	for (i = 0; i < count; i++)
-		tmp = readb(reg);
+		readb(reg);
 }
 
 static void dm9000_dumpblk_16bit(void __iomem *reg, int count)
 {
 	int i;
-	int tmp;
 
 	count = (count + 1) >> 1;
 
 	for (i = 0; i < count; i++)
-		tmp = readw(reg);
+		readw(reg);
 }
 
 static void dm9000_dumpblk_32bit(void __iomem *reg, int count)
 {
 	int i;
-	int tmp;
 
 	count = (count + 3) >> 2;
 
 	for (i = 0; i < count; i++)
-		tmp = readl(reg);
+		readl(reg);
 }
 
 /*
@@ -1454,7 +1449,7 @@ dm9000_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(dev, "failed to request reset gpio %d: %d\n",
 				reset_gpios, ret);
-			goto out_regulator_disable;
+			return -ENODEV;
 		}
 
 		/* According to manual PWRST# Low Period Min 1ms */
@@ -1466,10 +1461,8 @@ dm9000_probe(struct platform_device *pdev)
 
 	if (!pdata) {
 		pdata = dm9000_parse_dt(&pdev->dev);
-		if (IS_ERR(pdata)) {
-			ret = PTR_ERR(pdata);
-			goto out_regulator_disable;
-		}
+		if (IS_ERR(pdata))
+			return PTR_ERR(pdata);
 	}
 
 	/* Init network device */
@@ -1486,8 +1479,6 @@ dm9000_probe(struct platform_device *pdev)
 
 	db->dev = &pdev->dev;
 	db->ndev = ndev;
-	if (!IS_ERR(power))
-		db->power_supply = power;
 
 	spin_lock_init(&db->lock);
 	mutex_init(&db->addr_lock);
@@ -1510,7 +1501,7 @@ dm9000_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	db->irq_wake = platform_get_irq_optional(pdev, 1);
+	db->irq_wake = platform_get_irq(pdev, 1);
 	if (db->irq_wake >= 0) {
 		dev_dbg(db->dev, "wakeup irq %d\n", db->irq_wake);
 
@@ -1712,10 +1703,6 @@ out:
 	dm9000_release_board(pdev, db);
 	free_netdev(ndev);
 
-out_regulator_disable:
-	if (!IS_ERR(power))
-		regulator_disable(power);
-
 	return ret;
 }
 
@@ -1773,13 +1760,10 @@ static int
 dm9000_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
-	struct board_info *dm = to_dm9000_board(ndev);
 
 	unregister_netdev(ndev);
-	dm9000_release_board(pdev, dm);
+	dm9000_release_board(pdev, netdev_priv(ndev));
 	free_netdev(ndev);		/* free device structure */
-	if (dm->power_supply)
-		regulator_disable(dm->power_supply);
 
 	dev_dbg(&pdev->dev, "released and freed device\n");
 	return 0;

@@ -15,8 +15,6 @@
 #include <linux/fs.h>
 #include "overlayfs.h"
 
-#define OVL_IOCB_MASK (IOCB_DSYNC | IOCB_HIPRI | IOCB_NOWAIT | IOCB_SYNC)
-
 struct ovl_aio_req {
 	struct kiocb iocb;
 	struct kiocb *orig_iocb;
@@ -55,13 +53,14 @@ static struct file *ovl_open_realfile(const struct file *file,
 	err = inode_permission(realinode, MAY_OPEN | acc_mode);
 	if (err) {
 		realfile = ERR_PTR(err);
-	} else if (old_cred && !inode_owner_or_capable(realinode)) {
-		realfile = ERR_PTR(-EPERM);
 	} else {
+		if (!inode_owner_or_capable(realinode))
+			flags &= ~O_NOATIME;
+
 		realfile = open_with_fake_path(&file->f_path, flags, realinode,
 					       current_cred());
 	}
-	ovl_revert_creds(inode->i_sb, old_cred);
+	revert_creds(old_cred);
 
 	pr_debug("open(%p[%pD2/%c], 0%o) -> (%p, 0%o)\n",
 		 file, file, ovl_whatisit(inode, realinode), file->f_flags,
@@ -76,12 +75,6 @@ static int ovl_change_flags(struct file *file, unsigned int flags)
 {
 	struct inode *inode = file_inode(file);
 	int err;
-
-	flags |= OVL_OPEN_FLAGS;
-
-	/* If some flag changed that cannot be changed then something's amiss */
-	if (WARN_ON((file->f_flags ^ flags) & ~OVL_SETFL_MASK))
-		return -EIO;
 
 	flags &= OVL_SETFL_MASK;
 
@@ -211,7 +204,7 @@ static loff_t ovl_llseek(struct file *file, loff_t offset, int whence)
 
 	old_cred = ovl_override_creds(inode->i_sb);
 	ret = vfs_llseek(real.file, offset, whence);
-	ovl_revert_creds(inode->i_sb, old_cred);
+	revert_creds(old_cred);
 
 	file->f_pos = real.file->f_pos;
 	ovl_inode_unlock(inode);
@@ -241,6 +234,22 @@ static void ovl_file_accessed(struct file *file)
 	}
 
 	touch_atime(&file->f_path);
+}
+
+static rwf_t ovl_iocb_to_rwf(int ifl)
+{
+	rwf_t flags = 0;
+
+	if (ifl & IOCB_NOWAIT)
+		flags |= RWF_NOWAIT;
+	if (ifl & IOCB_HIPRI)
+		flags |= RWF_HIPRI;
+	if (ifl & IOCB_DSYNC)
+		flags |= RWF_DSYNC;
+	if (ifl & IOCB_SYNC)
+		flags |= RWF_SYNC;
+
+	return flags;
 }
 
 static void ovl_aio_cleanup_handler(struct ovl_aio_req *aio_req)
@@ -290,8 +299,7 @@ static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	if (is_sync_kiocb(iocb)) {
 		ret = vfs_iter_read(real.file, iter, &iocb->ki_pos,
-				    iocb_to_rw_flags(iocb->ki_flags,
-						     OVL_IOCB_MASK));
+				    ovl_iocb_to_rwf(iocb->ki_flags));
 	} else {
 		struct ovl_aio_req *aio_req;
 
@@ -310,8 +318,7 @@ static ssize_t ovl_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 			ovl_aio_cleanup_handler(aio_req);
 	}
 out:
-	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
-
+	revert_creds(old_cred);
 	ovl_file_accessed(file);
 
 	fdput(real);
@@ -349,7 +356,7 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	if (is_sync_kiocb(iocb)) {
 		file_start_write(real.file);
 		ret = vfs_iter_write(real.file, iter, &iocb->ki_pos,
-				     iocb_to_rw_flags(ifl, OVL_IOCB_MASK));
+				     ovl_iocb_to_rwf(ifl));
 		file_end_write(real.file);
 		/* Update size */
 		ovl_copyattr(ovl_inode_real(inode), inode);
@@ -376,54 +383,12 @@ static ssize_t ovl_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 			ovl_aio_cleanup_handler(aio_req);
 	}
 out:
-	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
+	revert_creds(old_cred);
 	fdput(real);
 
 out_unlock:
 	inode_unlock(inode);
 
-	return ret;
-}
-
-static ssize_t ovl_splice_read(struct file *in, loff_t *ppos,
-			 struct pipe_inode_info *pipe, size_t len,
-			 unsigned int flags)
-{
-	ssize_t ret;
-	struct fd real;
-	const struct cred *old_cred;
-
-	ret = ovl_real_fdget(in, &real);
-	if (ret)
-		return ret;
-
-	old_cred = ovl_override_creds(file_inode(in)->i_sb);
-	ret = generic_file_splice_read(real.file, ppos, pipe, len, flags);
-	ovl_revert_creds(file_inode(in)->i_sb, old_cred);
-
-	ovl_file_accessed(in);
-	fdput(real);
-	return ret;
-}
-
-static ssize_t
-ovl_splice_write(struct pipe_inode_info *pipe, struct file *out,
-			  loff_t *ppos, size_t len, unsigned int flags)
-{
-	struct fd real;
-	const struct cred *old_cred;
-	ssize_t ret;
-
-	ret = ovl_real_fdget(out, &real);
-	if (ret)
-		return ret;
-
-	old_cred = ovl_override_creds(file_inode(out)->i_sb);
-	ret = iter_file_splice_write(pipe, real.file, ppos, len, flags);
-	ovl_revert_creds(file_inode(out)->i_sb, old_cred);
-
-	ovl_file_accessed(out);
-	fdput(real);
 	return ret;
 }
 
@@ -445,7 +410,7 @@ static int ovl_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	if (file_inode(real.file) == ovl_inode_upper(file_inode(file))) {
 		old_cred = ovl_override_creds(file_inode(file)->i_sb);
 		ret = vfs_fsync_range(real.file, start, end, datasync);
-		ovl_revert_creds(file_inode(file)->i_sb, old_cred);
+		revert_creds(old_cred);
 	}
 
 	fdput(real);
@@ -469,7 +434,7 @@ static int ovl_mmap(struct file *file, struct vm_area_struct *vma)
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	ret = call_mmap(vma->vm_file, vma);
-	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
+	revert_creds(old_cred);
 
 	if (ret) {
 		/* Drop reference count from new vm_file value */
@@ -497,7 +462,7 @@ static long ovl_fallocate(struct file *file, int mode, loff_t offset, loff_t len
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	ret = vfs_fallocate(real.file, mode, offset, len);
-	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
+	revert_creds(old_cred);
 
 	/* Update size */
 	ovl_copyattr(ovl_inode_real(inode), inode);
@@ -519,7 +484,7 @@ static int ovl_fadvise(struct file *file, loff_t offset, loff_t len, int advice)
 
 	old_cred = ovl_override_creds(file_inode(file)->i_sb);
 	ret = vfs_fadvise(real.file, offset, len, advice);
-	ovl_revert_creds(file_inode(file)->i_sb, old_cred);
+	revert_creds(old_cred);
 
 	fdput(real);
 
@@ -675,7 +640,7 @@ static loff_t ovl_copyfile(struct file *file_in, loff_t pos_in,
 						flags);
 		break;
 	}
-	ovl_revert_creds(file_inode(file_out)->i_sb, old_cred);
+	revert_creds(old_cred);
 
 	/* Update size */
 	ovl_copyattr(ovl_inode_real(inode_out), inode_out);
@@ -735,8 +700,8 @@ const struct file_operations ovl_file_operations = {
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= ovl_compat_ioctl,
 #endif
-	.splice_read    = ovl_splice_read,
-	.splice_write   = ovl_splice_write,
+	.splice_read    = generic_file_splice_read,
+	.splice_write   = iter_file_splice_write,
 
 	.copy_file_range	= ovl_copy_file_range,
 	.remap_file_range	= ovl_remap_file_range,

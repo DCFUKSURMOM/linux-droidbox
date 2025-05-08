@@ -383,18 +383,17 @@ static void stm32_transmit_chars_dma(struct uart_port *port)
 					   DMA_MEM_TO_DEV,
 					   DMA_PREP_INTERRUPT);
 
-	if (!desc)
-		goto fallback_err;
+	if (!desc) {
+		for (i = count; i > 0; i--)
+			stm32_transmit_chars_pio(port);
+		return;
+	}
 
 	desc->callback = stm32_tx_dma_complete;
 	desc->callback_param = port;
 
 	/* Push current DMA TX transaction in the pending queue */
-	if (dma_submit_error(dmaengine_submit(desc))) {
-		/* dma no yet started, safe to free resources */
-		dmaengine_terminate_async(stm32port->tx_ch);
-		goto fallback_err;
-	}
+	dmaengine_submit(desc);
 
 	/* Issue pending DMA TX requests */
 	dma_async_issue_pending(stm32port->tx_ch);
@@ -403,11 +402,6 @@ static void stm32_transmit_chars_dma(struct uart_port *port)
 
 	xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
 	port->icount.tx += count;
-	return;
-
-fallback_err:
-	for (i = count; i > 0; i--)
-		stm32_transmit_chars_pio(port);
 }
 
 static void stm32_transmit_chars(struct uart_port *port)
@@ -1136,11 +1130,7 @@ static int stm32_of_dma_rx_probe(struct stm32_port *stm32port,
 	desc->callback_param = NULL;
 
 	/* Push current DMA transaction in the pending queue */
-	ret = dma_submit_error(dmaengine_submit(desc));
-	if (ret) {
-		dmaengine_terminate_sync(stm32port->rx_ch);
-		goto config_err;
-	}
+	dmaengine_submit(desc);
 
 	/* Issue pending DMA requests */
 	dma_async_issue_pending(stm32port->rx_ch);

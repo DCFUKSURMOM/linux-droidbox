@@ -20,7 +20,6 @@
 #include <linux/seqlock.h>
 #include <linux/timer.h>
 #include <linux/timerqueue.h>
-#include <linux/android_kabi.h>
 
 struct hrtimer_clock_base;
 struct hrtimer_cpu_base;
@@ -125,8 +124,6 @@ struct hrtimer {
 	u8				is_rel;
 	u8				is_soft;
 	u8				is_hard;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -450,6 +447,10 @@ static inline void hrtimer_restart(struct hrtimer *timer)
 /* Query timers: */
 extern ktime_t __hrtimer_get_remaining(const struct hrtimer *timer, bool adjust);
 
+/**
+ * hrtimer_get_remaining - get remaining time for the timer
+ * @timer:	the timer to read
+ */
 static inline ktime_t hrtimer_get_remaining(const struct hrtimer *timer)
 {
 	return __hrtimer_get_remaining(timer, false);
@@ -461,7 +462,7 @@ extern u64 hrtimer_next_event_without(const struct hrtimer *exclude);
 extern bool hrtimer_active(const struct hrtimer *timer);
 
 /**
- * hrtimer_is_queued = check, whether the timer is on one of the queues
+ * hrtimer_is_queued - check, whether the timer is on one of the queues
  * @timer:	Timer to check
  *
  * Returns: True if the timer is queued, false otherwise

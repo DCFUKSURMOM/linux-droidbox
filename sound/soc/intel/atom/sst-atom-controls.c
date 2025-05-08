@@ -827,14 +827,14 @@ static int sst_get_ssp_mode(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	int format;
 
-	format = (fmt & SND_SOC_DAIFMT_MASTER_MASK);
+	format = (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK);
 	dev_dbg(dai->dev, "Enter:%s, format=%x\n", __func__, format);
 
 	switch (format) {
-	case SND_SOC_DAIFMT_CBS_CFS:
-		return SSP_MODE_MASTER;
-	case SND_SOC_DAIFMT_CBM_CFM:
-		return SSP_MODE_SLAVE;
+	case SND_SOC_DAIFMT_CBC_CFC:
+		return SSP_MODE_PROVIDER;
+	case SND_SOC_DAIFMT_CBP_CFP:
+		return SSP_MODE_CONSUMER;
 	default:
 		dev_err(dai->dev, "Invalid ssp protocol: %d\n", format);
 	}
@@ -905,7 +905,7 @@ static const struct sst_ssp_config sst_ssp_configs = {
 	.ssp_id = SSP_CODEC,
 	.bits_per_slot = 24,
 	.slots = 4,
-	.ssp_mode = SSP_MODE_MASTER,
+	.ssp_mode = SSP_MODE_PROVIDER,
 	.pcm_mode = SSP_PCM_MODE_NETWORK,
 	.duplex = SSP_DUPLEX,
 	.ssp_protocol = SSP_MODE_PCM,
@@ -945,7 +945,7 @@ int send_ssp_cmd(struct snd_soc_dai *dai, const char *id, bool enable)
 	struct sst_data *drv = snd_soc_dai_get_drvdata(dai);
 	int ssp_id;
 
-	dev_dbg(dai->dev, "Enter: enable=%d port_name=%s\n", enable, id);
+	dev_info(dai->dev, "Enter: enable=%d port_name=%s\n", enable, id);
 
 	if (strcmp(id, "ssp0-port") == 0)
 		ssp_id = SSP_MODEM;

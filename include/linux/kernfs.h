@@ -16,7 +16,6 @@
 #include <linux/atomic.h>
 #include <linux/uidgid.h>
 #include <linux/wait.h>
-#include <linux/android_kabi.h>
 
 struct file;
 struct dentry;
@@ -117,7 +116,7 @@ struct kernfs_elem_attr {
  * kernfs node is represented by single kernfs_node.  Most fields are
  * private to kernfs and shouldn't be accessed directly by kernfs users.
  *
- * As long as s_count reference is held, the kernfs_node itself is
+ * As long as count reference is held, the kernfs_node itself is
  * accessible.  Dereferencing elem or any other outer entity requires
  * active reference.
  */
@@ -176,11 +175,6 @@ struct kernfs_syscall_ops {
 		      const char *new_name);
 	int (*show_path)(struct seq_file *sf, struct kernfs_node *kn,
 			 struct kernfs_root *root);
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
-	ANDROID_KABI_RESERVE(3);
-	ANDROID_KABI_RESERVE(4);
 };
 
 struct kernfs_root {
@@ -274,9 +268,6 @@ struct kernfs_ops {
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lock_class_key	lockdep_key;
 #endif
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
 };
 
 /*

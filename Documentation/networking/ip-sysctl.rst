@@ -630,15 +630,16 @@ tcp_rmem - vector of 3 INTEGERs: min, default, max
 
 	default: initial size of receive buffer used by TCP sockets.
 	This value overrides net.core.rmem_default used by other protocols.
-	Default: 131072 bytes.
-	This value results in initial window of 65535.
+	Default: 87380 bytes. This value results in window of 65535 with
+	default setting of tcp_adv_win_scale and tcp_app_win:0 and a bit
+	less for default tcp_app_win. See below about these variables.
 
 	max: maximal size of receive buffer allowed for automatically
 	selected receiver buffers for TCP socket. This value does not override
 	net.core.rmem_max.  Calling setsockopt() with SO_RCVBUF disables
 	automatic tuning of that socket's receive buffer size, in which
 	case this value is ignored.
-	Default: between 131072 and 6MB, depending on RAM size.
+	Default: between 87380B and 6MB, depending on RAM size.
 
 tcp_sack - BOOLEAN
 	Enable select acknowledgments (SACKS).
@@ -1056,19 +1057,6 @@ ip_local_reserved_ports - list of comma separated ranges
 
 	Default: Empty
 
-ip_local_unbindable_ports - list of comma separated ranges
-	Specify the ports which are not directly bind()able.
-
-	Usually you would use this to block the use of ports which
-	are invalid due to something outside of the control of the
-	kernel.  For example a port stolen by the nic for serial
-	console, remote power management or debugging.
-
-	There's a relatively high chance you will also want to list
-	these ports in 'ip_local_reserved_ports' to prevent autobinding.
-
-	Default: Empty
-
 ip_unprivileged_port_start - INTEGER
 	This is a per-namespace sysctl.  It defines the first
 	unprivileged port in the network namespace.  Privileged ports
@@ -1208,7 +1196,7 @@ icmp_errors_use_inbound_ifaddr - BOOLEAN
 
 	If non-zero, the message will be sent with the primary address of
 	the interface that received the packet that caused the icmp error.
-	This is the behaviour network many administrators will expect from
+	This is the behaviour many network administrators will expect from
 	a router. And it can make debugging complicated network layouts
 	much easier.
 
@@ -1566,6 +1554,9 @@ igmpv3_unsolicited_report_interval - INTEGER
 
 	Default: 1000 (1 seconds)
 
+ignore_routes_with_linkdown - BOOLEAN
+        Ignore routes whose link is down when performing a FIB lookup.
+
 promote_secondaries - BOOLEAN
 	When a primary IP address is removed from this interface
 	promote a corresponding secondary IP address instead of
@@ -1816,11 +1807,23 @@ seg6_flowlabel - INTEGER
 ``conf/default/*``:
 	Change the interface-specific default settings.
 
+	These settings would be used during creating new interfaces.
+
 
 ``conf/all/*``:
 	Change all the interface-specific settings.
 
 	[XXX:  Other special features than forwarding?]
+
+conf/all/disable_ipv6 - BOOLEAN
+	Changing this value is same as changing ``conf/default/disable_ipv6``
+	setting and also all per-interface ``disable_ipv6`` settings to the same
+	value.
+
+	Reading this value does not have any particular meaning. It does not say
+	whether IPv6 support is enabled or disabled. Returned value can be 1
+	also in the case when some interface has ``disable_ipv6`` set to 0 and
+	has configured IPv6 addresses.
 
 conf/all/forwarding - BOOLEAN
 	Enable global IPv6 forwarding between all interfaces.
@@ -2653,6 +2656,37 @@ addr_scope_policy - INTEGER
 	- 3   - Follow draft but allow IPv4 link local addresses
 
 	Default: 1
+
+udp_port - INTEGER
+	The listening port for the local UDP tunneling sock. Normally it's
+	using the IANA-assigned UDP port number 9899 (sctp-tunneling).
+
+	This UDP sock is used for processing the incoming UDP-encapsulated
+	SCTP packets (from RFC6951), and shared by all applications in the
+	same net namespace. This UDP sock will be closed when the value is
+	set to 0.
+
+	The value will also be used to set the src port of the UDP header
+	for the outgoing UDP-encapsulated SCTP packets. For the dest port,
+	please refer to 'encap_port' below.
+
+	Default: 0
+
+encap_port - INTEGER
+	The default remote UDP encapsulation port.
+
+	This value is used to set the dest port of the UDP header for the
+	outgoing UDP-encapsulated SCTP packets by default. Users can also
+	change the value for each sock/asoc/transport by using setsockopt.
+	For further information, please refer to RFC6951.
+
+	Note that when connecting to a remote server, the client should set
+	this to the port that the UDP tunneling sock on the peer server is
+	listening to and the local UDP tunneling sock on the client also
+	must be started. On the server, it would get the encap_port from
+	the incoming packet's source port.
+
+	Default: 0
 
 
 ``/proc/sys/net/core/*``

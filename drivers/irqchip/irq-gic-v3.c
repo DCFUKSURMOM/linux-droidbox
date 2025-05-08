@@ -18,10 +18,6 @@
 #include <linux/percpu.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
-#include <linux/syscore_ops.h>
-#include <linux/wakeup_reason.h>
-#include <trace/hooks/gic_v3.h>
-
 
 #include <linux/irqchip.h>
 #include <linux/irqchip/arm-gic-common.h>
@@ -32,8 +28,6 @@
 #include <asm/exception.h>
 #include <asm/smp_plat.h>
 #include <asm/virt.h>
-
-#include <trace/hooks/gic.h>
 
 #include "irq-gic-common.h"
 
@@ -676,7 +670,6 @@ static asmlinkage void __exception_irq_entry gic_handle_irq(struct pt_regs *regs
 
 	if (handle_domain_irq(gic_data.domain, irqnr, regs)) {
 		WARN_ONCE(true, "Unexpected interrupt received!\n");
-		log_abnormal_wakeup_reason("unexpected HW IRQ %u", irqnr);
 		gic_deactivate_unhandled(irqnr);
 	}
 }
@@ -771,15 +764,11 @@ static void __init gic_dist_init(void)
 	 * enabled.
 	 */
 	affinity = gic_mpidr_to_affinity(cpu_logical_map(smp_processor_id()));
-	for (i = 32; i < GIC_LINE_NR; i++) {
-		trace_android_vh_gic_v3_affinity_init(i, GICD_IROUTER, &affinity);
+	for (i = 32; i < GIC_LINE_NR; i++)
 		gic_write_irouter(affinity, base + GICD_IROUTER + i * 8);
-	}
 
-	for (i = 0; i < GIC_ESPI_NR; i++) {
-		trace_android_vh_gic_v3_affinity_init(i, GICD_IROUTERnE, &affinity);
+	for (i = 0; i < GIC_ESPI_NR; i++)
 		gic_write_irouter(affinity, base + GICD_IROUTERnE + i * 8);
-	}
 }
 
 static int gic_iterate_rdists(int (*fn)(struct redist_region *, void __iomem *))
@@ -1211,7 +1200,6 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 	reg = gic_dist_base(d) + offset + (index * 8);
 	val = gic_mpidr_to_affinity(cpu_logical_map(cpu));
 
-	trace_android_vh_gic_v3_set_affinity(d, mask_val, &val, force, gic_dist_base(d));
 	gic_write_irouter(val, reg);
 
 	/*
@@ -1266,26 +1254,6 @@ static void gic_cpu_pm_init(void)
 static inline void gic_cpu_pm_init(void) { }
 #endif /* CONFIG_CPU_PM */
 
-#ifdef CONFIG_PM
-static void gic_resume(void)
-{
-	trace_android_vh_gic_resume(gic_data.domain, gic_data.dist_base);
-}
-
-static struct syscore_ops gic_syscore_ops = {
-	.resume = gic_resume,
-};
-
-static void gic_syscore_init(void)
-{
-	register_syscore_ops(&gic_syscore_ops);
-}
-
-#else
-static inline void gic_syscore_init(void) { }
-#endif
-
-
 static struct irq_chip gic_chip = {
 	.name			= "GICv3",
 	.irq_mask		= gic_mask_irq,
@@ -1334,12 +1302,6 @@ static int gic_irq_domain_map(struct irq_domain *d, unsigned int irq,
 
 	switch (__get_intid_range(hw)) {
 	case SGI_RANGE:
-		irq_set_percpu_devid(irq);
-		irq_domain_set_info(d, irq, hw, chip, d->host_data,
-				    handle_percpu_devid_fasteoi_ipi,
-				    NULL, NULL);
-		break;
-
 	case PPI_RANGE:
 	case EPPI_RANGE:
 		irq_set_percpu_devid(irq);
@@ -1742,7 +1704,6 @@ static int __init gic_init_bases(void __iomem *dist_base,
 	gic_cpu_init();
 	gic_smp_init();
 	gic_cpu_pm_init();
-	gic_syscore_init();
 
 	if (gic_dist_supports_lpis()) {
 		its_init(handle, &gic_data.rdists, gic_data.domain);

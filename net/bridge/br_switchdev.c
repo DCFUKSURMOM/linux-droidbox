@@ -123,8 +123,6 @@ br_switchdev_fdb_notify(const struct net_bridge_fdb_entry *fdb, int type)
 {
 	if (!fdb->dst)
 		return;
-	if (test_bit(BR_FDB_LOCAL, &fdb->flags))
-		return;
 
 	switch (type) {
 	case RTM_DELNEIGH:

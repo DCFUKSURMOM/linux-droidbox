@@ -223,19 +223,6 @@ static const struct dmi_system_id rotated_screen[] = {
 	{}
 };
 
-static const struct dmi_system_id y_inverted[] = {
-#if defined(CONFIG_DMI) && defined(CONFIG_X86)
-	{
-		.ident = "Microtech e-tab Pro",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Microtech"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "e-tab Pro")
-		}
-	},
-#endif
-	{}
-};
-
 static const struct dmi_system_id nine_bytes_report[] = {
 #if defined(CONFIG_DMI) && defined(CONFIG_X86)
 	{
@@ -407,15 +394,13 @@ static void goodix_ts_report_touch_8b(struct goodix_ts_data *ts, u8 *coor_data)
 	int input_x = get_unaligned_le16(&coor_data[1]);
 	int input_y = get_unaligned_le16(&coor_data[3]);
 	int input_w = get_unaligned_le16(&coor_data[5]);
-	int input_p = get_unaligned_le16(&coor_data[5]);
 
 	input_mt_slot(ts->input_dev, id);
 	input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, true);
 	touchscreen_report_pos(ts->input_dev, &ts->prop,
 			       input_x, input_y, true);
+	input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, input_w);
 	input_report_abs(ts->input_dev, ABS_MT_WIDTH_MAJOR, input_w);
-	/* Add ABS_MT_PRESSURE for Android to recognize the stylus hovering */
-	input_report_abs(ts->input_dev, ABS_MT_PRESSURE, input_p);
 }
 
 static void goodix_ts_report_touch_9b(struct goodix_ts_data *ts, u8 *coor_data)
@@ -592,6 +577,7 @@ static void goodix_calc_cfg_checksum_16(struct goodix_ts_data *ts)
  *
  * @ts: goodix_ts_data pointer
  * @cfg: firmware config data
+ * @len: config data length
  */
 static int goodix_check_cfg(struct goodix_ts_data *ts, const u8 *cfg, int len)
 {
@@ -610,6 +596,7 @@ static int goodix_check_cfg(struct goodix_ts_data *ts, const u8 *cfg, int len)
  *
  * @ts: goodix_ts_data pointer
  * @cfg: config firmware to write to device
+ * @len: config data length
  */
 static int goodix_send_cfg(struct goodix_ts_data *ts, const u8 *cfg, int len)
 {
@@ -1115,7 +1102,7 @@ static int goodix_configure_dev(struct goodix_ts_data *ts)
 	input_set_capability(ts->input_dev, EV_ABS, ABS_MT_POSITION_X);
 	input_set_capability(ts->input_dev, EV_ABS, ABS_MT_POSITION_Y);
 	input_set_abs_params(ts->input_dev, ABS_MT_WIDTH_MAJOR, 0, 255, 0, 0);
-	input_set_abs_params(ts->input_dev, ABS_MT_PRESSURE, 0, 255, 0, 0);
+	input_set_abs_params(ts->input_dev, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 
 	/* Read configuration and apply touchscreen parameters */
 	goodix_read_config(ts);
@@ -1141,9 +1128,6 @@ static int goodix_configure_dev(struct goodix_ts_data *ts)
 		ts->prop.invert_y = true;
 		dev_dbg(&ts->client->dev,
 			"Applying '180 degrees rotated screen' quirk\n");
-	} else if (dmi_check_system(y_inverted)) {
-		ts->prop.invert_y = true;
-		dev_err(&ts->client->dev, "Applying 'invert y axis' quirk\n");
 	}
 
 	if (dmi_check_system(nine_bytes_report)) {
@@ -1187,7 +1171,8 @@ static int goodix_configure_dev(struct goodix_ts_data *ts)
 /**
  * goodix_config_cb - Callback to finish device init
  *
- * @ts: our goodix_ts_data pointer
+ * @cfg: firmware config
+ * @ctx: our goodix_ts_data pointer
  *
  * request_firmware_wait callback that finishes
  * initialization of the device.

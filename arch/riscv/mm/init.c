@@ -13,6 +13,7 @@
 #include <linux/of_fdt.h>
 #include <linux/libfdt.h>
 #include <linux/set_memory.h>
+#include <linux/dma-map-ops.h>
 
 #include <asm/fixmap.h>
 #include <asm/tlbflush.h>
@@ -41,13 +42,14 @@ struct pt_alloc_ops {
 #endif
 };
 
+static phys_addr_t dma32_phys_limit __ro_after_init;
+
 static void __init zone_sizes_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES] = { 0, };
 
 #ifdef CONFIG_ZONE_DMA32
-	max_zone_pfns[ZONE_DMA32] = PFN_DOWN(min(4UL * SZ_1G,
-			(unsigned long) PFN_PHYS(max_low_pfn)));
+	max_zone_pfns[ZONE_DMA32] = PFN_DOWN(dma32_phys_limit);
 #endif
 	max_zone_pfns[ZONE_NORMAL] = max_low_pfn;
 
@@ -193,7 +195,8 @@ void __init setup_bootmem(void)
 
 	max_pfn = PFN_DOWN(dram_end);
 	max_low_pfn = max_pfn;
-	set_max_mapnr(max_low_pfn);
+	dma32_phys_limit = min(4UL * SZ_1G, (unsigned long)PFN_PHYS(max_low_pfn));
+	set_max_mapnr(max_low_pfn - ARCH_PFN_OFFSET);
 
 #ifdef CONFIG_BLK_DEV_INITRD
 	setup_initrd();
@@ -206,6 +209,7 @@ void __init setup_bootmem(void)
 	memblock_reserve(dtb_early_pa, fdt_totalsize(dtb_early_va));
 
 	early_init_fdt_scan_reserved_mem();
+	dma_contiguous_reserve(dma32_phys_limit);
 	memblock_allow_resize();
 	memblock_dump_all();
 }
@@ -221,6 +225,8 @@ EXPORT_SYMBOL(pfn_base);
 pgd_t swapper_pg_dir[PTRS_PER_PGD] __page_aligned_bss;
 pgd_t trampoline_pg_dir[PTRS_PER_PGD] __page_aligned_bss;
 pte_t fixmap_pte[PTRS_PER_PTE] __page_aligned_bss;
+
+#define MAX_EARLY_MAPPING_SIZE	SZ_128M
 
 pgd_t early_pg_dir[PTRS_PER_PGD] __initdata __aligned(PAGE_SIZE);
 
@@ -296,7 +302,13 @@ static void __init create_pte_mapping(pte_t *ptep,
 
 pmd_t trampoline_pmd[PTRS_PER_PMD] __page_aligned_bss;
 pmd_t fixmap_pmd[PTRS_PER_PMD] __page_aligned_bss;
-pmd_t early_pmd[PTRS_PER_PMD] __initdata __aligned(PAGE_SIZE);
+
+#if MAX_EARLY_MAPPING_SIZE < PGDIR_SIZE
+#define NUM_EARLY_PMDS		1UL
+#else
+#define NUM_EARLY_PMDS		(1UL + MAX_EARLY_MAPPING_SIZE / PGDIR_SIZE)
+#endif
+pmd_t early_pmd[PTRS_PER_PMD * NUM_EARLY_PMDS] __initdata __aligned(PAGE_SIZE);
 pmd_t early_dtb_pmd[PTRS_PER_PMD] __initdata __aligned(PAGE_SIZE);
 
 static pmd_t *__init get_pmd_virt_early(phys_addr_t pa)
@@ -318,9 +330,11 @@ static pmd_t *get_pmd_virt_late(phys_addr_t pa)
 
 static phys_addr_t __init alloc_pmd_early(uintptr_t va)
 {
-	BUG_ON((va - PAGE_OFFSET) >> PGDIR_SHIFT);
+	uintptr_t pmd_num;
 
-	return (uintptr_t)early_pmd;
+	pmd_num = (va - PAGE_OFFSET) >> PGDIR_SHIFT;
+	BUG_ON(pmd_num >= NUM_EARLY_PMDS);
+	return (uintptr_t)&early_pmd[pmd_num * PTRS_PER_PMD];
 }
 
 static phys_addr_t __init alloc_pmd_fixmap(uintptr_t va)
@@ -438,7 +452,7 @@ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
 	uintptr_t va, pa, end_va;
 	uintptr_t load_pa = (uintptr_t)(&_start);
 	uintptr_t load_sz = (uintptr_t)(&_end) - load_pa;
-	uintptr_t map_size;
+	uintptr_t map_size = best_map_size(load_pa, MAX_EARLY_MAPPING_SIZE);
 #ifndef __PAGETABLE_PMD_FOLDED
 	pmd_t fix_bmap_spmd, fix_bmap_epmd;
 #endif
@@ -450,11 +464,12 @@ asmlinkage void __init setup_vm(uintptr_t dtb_pa)
 	 * Enforce boot alignment requirements of RV32 and
 	 * RV64 by only allowing PMD or PGD mappings.
 	 */
-	map_size = PMD_SIZE;
+	BUG_ON(map_size == PAGE_SIZE);
 
 	/* Sanity check alignment and size */
 	BUG_ON((PAGE_OFFSET % PGDIR_SIZE) != 0);
 	BUG_ON((load_pa % map_size) != 0);
+	BUG_ON(load_sz > MAX_EARLY_MAPPING_SIZE);
 
 	pt_ops.alloc_pte = alloc_pte_early;
 	pt_ops.get_pte_virt = get_pte_virt_early;
@@ -619,48 +634,33 @@ static inline void setup_vm_final(void)
 #endif /* CONFIG_MMU */
 
 #ifdef CONFIG_STRICT_KERNEL_RWX
-void mark_rodata_ro(void)
+void protect_kernel_text_data(void)
 {
-	unsigned long text_start = (unsigned long)_text;
-	unsigned long text_end = (unsigned long)_etext;
+	unsigned long text_start = (unsigned long)_start;
+	unsigned long init_text_start = (unsigned long)__init_text_begin;
+	unsigned long init_data_start = (unsigned long)__init_data_begin;
 	unsigned long rodata_start = (unsigned long)__start_rodata;
 	unsigned long data_start = (unsigned long)_data;
 	unsigned long max_low = (unsigned long)(__va(PFN_PHYS(max_low_pfn)));
 
-	set_memory_ro(text_start, (text_end - text_start) >> PAGE_SHIFT);
-	set_memory_ro(rodata_start, (data_start - rodata_start) >> PAGE_SHIFT);
+	set_memory_ro(text_start, (init_text_start - text_start) >> PAGE_SHIFT);
+	set_memory_ro(init_text_start, (init_data_start - init_text_start) >> PAGE_SHIFT);
+	set_memory_nx(init_data_start, (rodata_start - init_data_start) >> PAGE_SHIFT);
+	/* rodata section is marked readonly in mark_rodata_ro */
 	set_memory_nx(rodata_start, (data_start - rodata_start) >> PAGE_SHIFT);
 	set_memory_nx(data_start, (max_low - data_start) >> PAGE_SHIFT);
+}
+
+void mark_rodata_ro(void)
+{
+	unsigned long rodata_start = (unsigned long)__start_rodata;
+	unsigned long data_start = (unsigned long)_data;
+
+	set_memory_ro(rodata_start, (data_start - rodata_start) >> PAGE_SHIFT);
 
 	debug_checkwx();
 }
 #endif
-
-static void __init resource_init(void)
-{
-	struct memblock_region *region;
-
-	for_each_mem_region(region) {
-		struct resource *res;
-
-		res = memblock_alloc(sizeof(struct resource), SMP_CACHE_BYTES);
-		if (!res)
-			panic("%s: Failed to allocate %zu bytes\n", __func__,
-			      sizeof(struct resource));
-
-		if (memblock_is_nomap(region)) {
-			res->name = "reserved";
-			res->flags = IORESOURCE_MEM;
-		} else {
-			res->name = "System RAM";
-			res->flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
-		}
-		res->start = __pfn_to_phys(memblock_region_memory_base_pfn(region));
-		res->end = __pfn_to_phys(memblock_region_memory_end_pfn(region)) - 1;
-
-		request_resource(&iomem_resource, res);
-	}
-}
 
 void __init paging_init(void)
 {
@@ -668,7 +668,6 @@ void __init paging_init(void)
 	sparse_init();
 	setup_zero_page();
 	zone_sizes_init();
-	resource_init();
 }
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP

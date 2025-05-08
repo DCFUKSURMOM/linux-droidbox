@@ -1019,7 +1019,7 @@ static int online_memory_block(struct memory_block *mem, void *arg)
  */
 int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 {
-	struct mhp_params params = { .pgprot = pgprot_mhp(PAGE_KERNEL) };
+	struct mhp_params params = { .pgprot = PAGE_KERNEL };
 	u64 start, size;
 	bool new_node = false;
 	int ret;
@@ -1129,46 +1129,6 @@ int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags)
 	return rc;
 }
 EXPORT_SYMBOL_GPL(add_memory);
-
-int add_memory_subsection(int nid, u64 start, u64 size)
-{
-	struct mhp_params params = { .pgprot = PAGE_KERNEL };
-	struct resource *res;
-	int ret;
-
-	if (size == memory_block_size_bytes())
-		return add_memory(nid, start, size, MHP_NONE);
-
-	if (!IS_ALIGNED(start, SUBSECTION_SIZE) ||
-	    !IS_ALIGNED(size, SUBSECTION_SIZE)) {
-		pr_err("%s: start 0x%llx size 0x%llx not aligned to subsection size\n",
-			   __func__, start, size);
-		return -EINVAL;
-	}
-
-	res = register_memory_resource(start, size, "System RAM");
-	if (IS_ERR(res))
-		return PTR_ERR(res);
-
-	mem_hotplug_begin();
-
-	nid = memory_add_physaddr_to_nid(start);
-
-	if (IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK))
-		memblock_add_node(start, size, nid);
-
-	ret = arch_add_memory(nid, start, size, &params);
-	if (ret) {
-		if (IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK))
-			memblock_remove(start, size);
-		pr_err("%s failed to add subsection start 0x%llx size 0x%llx\n",
-			   __func__, start, size);
-	}
-	mem_hotplug_done();
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(add_memory_subsection);
 
 /*
  * Add special, driver-managed memory to the system as system RAM. Such
@@ -1531,14 +1491,19 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 	}
 	node = zone_to_nid(zone);
 
-	lru_cache_disable();
+	/*
+	 * Disable pcplists so that page isolation cannot race with freeing
+	 * in a way that pages from isolated pageblock are left on pcplists.
+	 */
+	zone_pcp_disable(zone);
+
 	/* set above range as isolated */
 	ret = start_isolate_page_range(start_pfn, end_pfn,
 				       MIGRATE_MOVABLE,
 				       MEMORY_OFFLINE | REPORT_FAILURE);
 	if (ret) {
 		reason = "failure to isolate range";
-		goto failed_removal;
+		goto failed_removal_pcplists_disabled;
 	}
 
 	arg.start_pfn = start_pfn;
@@ -1562,6 +1527,7 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 			}
 
 			cond_resched();
+			lru_add_drain_all();
 
 			ret = scan_movable_pages(pfn, end_pfn, &pfn);
 			if (!ret) {
@@ -1589,26 +1555,13 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 			goto failed_removal_isolated;
 		}
 
-		/*
-		 * per-cpu pages are drained in start_isolate_page_range, but if
-		 * there are still pages that are not free, make sure that we
-		 * drain again, because when we isolated range we might
-		 * have raced with another thread that was adding pages to pcp
-		 * list.
-		 *
-		 * Forward progress should be still guaranteed because
-		 * pages on the pcp list can only belong to MOVABLE_ZONE
-		 * because has_unmovable_pages explicitly checks for
-		 * PageBuddy on freed pages on other zones.
-		 */
 		ret = test_pages_isolated(start_pfn, end_pfn, MEMORY_OFFLINE);
-		if (ret)
-			drain_all_pages(zone);
+
 	} while (ret);
 
 	/* Mark all sections offline and remove free pages from the buddy. */
 	__offline_isolated_pages(start_pfn, end_pfn);
-	pr_info("Offlined Pages %ld\n", nr_pages);
+	pr_debug("Offlined Pages %ld\n", nr_pages);
 
 	/*
 	 * The memory sections are marked offline, and the pageblock flags
@@ -1619,7 +1572,8 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 	zone->nr_isolate_pageblock -= nr_pages / pageblock_nr_pages;
 	spin_unlock_irqrestore(&zone->lock, flags);
 
-	lru_cache_enable();
+	zone_pcp_enable(zone);
+
 	/* removal success */
 	adjust_managed_page_count(pfn_to_page(start_pfn), -nr_pages);
 	zone->present_pages -= nr_pages;
@@ -1652,6 +1606,8 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 failed_removal_isolated:
 	undo_isolate_page_range(start_pfn, end_pfn, MIGRATE_MOVABLE);
 	memory_notify(MEM_CANCEL_OFFLINE, &arg);
+failed_removal_pcplists_disabled:
+	zone_pcp_enable(zone);
 failed_removal:
 	pr_debug("memory offlining [mem %#010llx-%#010llx] failed due to %s\n",
 		 (unsigned long long) start_pfn << PAGE_SHIFT,
@@ -1828,90 +1784,112 @@ int remove_memory(int nid, u64 start, u64 size)
 }
 EXPORT_SYMBOL_GPL(remove_memory);
 
-static bool __check_sections_offline(unsigned long start_pfn,
-		unsigned long nr_pages)
+static int try_offline_memory_block(struct memory_block *mem, void *arg)
 {
-	const unsigned long end_pfn = start_pfn + nr_pages;
-	unsigned long pfn, sec_nr;
+	uint8_t online_type = MMOP_ONLINE_KERNEL;
+	uint8_t **online_types = arg;
+	struct page *page;
+	int rc;
 
-	for (pfn = start_pfn; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
-		sec_nr = pfn_to_section_nr(pfn);
+	/*
+	 * Sense the online_type via the zone of the memory block. Offlining
+	 * with multiple zones within one memory block will be rejected
+	 * by offlining code ... so we don't care about that.
+	 */
+	page = pfn_to_online_page(section_nr_to_pfn(mem->start_section_nr));
+	if (page && zone_idx(page_zone(page)) == ZONE_MOVABLE)
+		online_type = MMOP_ONLINE_MOVABLE;
 
-		if (!valid_section_nr(sec_nr) || online_section_nr(sec_nr))
-			return false;
-	}
+	rc = device_offline(&mem->dev);
+	/*
+	 * Default is MMOP_OFFLINE - change it only if offlining succeeded,
+	 * so try_reonline_memory_block() can do the right thing.
+	 */
+	if (!rc)
+		**online_types = online_type;
 
-	return true;
+	(*online_types)++;
+	/* Ignore if already offline. */
+	return rc < 0 ? rc : 0;
 }
 
-int remove_memory_subsection(int nid, u64 start, u64 size)
+static int try_reonline_memory_block(struct memory_block *mem, void *arg)
 {
-	if (size ==  memory_block_size_bytes())
-		return remove_memory(nid, start, size);
+	uint8_t **online_types = arg;
+	int rc;
 
-	if (!IS_ALIGNED(start, SUBSECTION_SIZE) ||
-	    !IS_ALIGNED(size, SUBSECTION_SIZE)) {
-		pr_err("%s: start 0x%llx size 0x%llx not aligned to subsection size\n",
-			   __func__, start, size);
-		return -EINVAL;
+	if (**online_types != MMOP_OFFLINE) {
+		mem->online_type = **online_types;
+		rc = device_online(&mem->dev);
+		if (rc < 0)
+			pr_warn("%s: Failed to re-online memory: %d",
+				__func__, rc);
 	}
 
-	mem_hotplug_begin();
-
-	/* we cannot remove subsections that are invalid or online */
-	if(!__check_sections_offline(PHYS_PFN(start), size >> PAGE_SHIFT)) {
-		pr_err("%s: [%llx, %llx) sections are not offlined\n",
-			   __func__, start, start + size);
-		mem_hotplug_done();
-		return -EBUSY;
-	}
-
-	arch_remove_memory(nid, start, size, NULL);
-
-	if (IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK))
-		memblock_remove(start, size);
-
-	release_mem_region_adjustable(start, size);
-
-	mem_hotplug_done();
-
+	/* Continue processing all remaining memory blocks. */
+	(*online_types)++;
 	return 0;
 }
-EXPORT_SYMBOL_GPL(remove_memory_subsection);
 
 /*
- * Try to offline and remove a memory block. Might take a long time to
- * finish in case memory is still in use. Primarily useful for memory devices
- * that logically unplugged all memory (so it's no longer in use) and want to
- * offline + remove the memory block.
+ * Try to offline and remove memory. Might take a long time to finish in case
+ * memory is still in use. Primarily useful for memory devices that logically
+ * unplugged all memory (so it's no longer in use) and want to offline + remove
+ * that memory.
  */
 int offline_and_remove_memory(int nid, u64 start, u64 size)
 {
-	struct memory_block *mem;
-	int rc = -EINVAL;
+	const unsigned long mb_count = size / memory_block_size_bytes();
+	uint8_t *online_types, *tmp;
+	int rc;
 
 	if (!IS_ALIGNED(start, memory_block_size_bytes()) ||
-	    size != memory_block_size_bytes())
-		return rc;
-
-	lock_device_hotplug();
-	mem = find_memory_block(__pfn_to_section(PFN_DOWN(start)));
-	if (mem)
-		rc = device_offline(&mem->dev);
-	/* Ignore if the device is already offline. */
-	if (rc > 0)
-		rc = 0;
+	    !IS_ALIGNED(size, memory_block_size_bytes()) || !size)
+		return -EINVAL;
 
 	/*
-	 * In case we succeeded to offline the memory block, remove it.
+	 * We'll remember the old online type of each memory block, so we can
+	 * try to revert whatever we did when offlining one memory block fails
+	 * after offlining some others succeeded.
+	 */
+	online_types = kmalloc_array(mb_count, sizeof(*online_types),
+				     GFP_KERNEL);
+	if (!online_types)
+		return -ENOMEM;
+	/*
+	 * Initialize all states to MMOP_OFFLINE, so when we abort processing in
+	 * try_offline_memory_block(), we'll skip all unprocessed blocks in
+	 * try_reonline_memory_block().
+	 */
+	memset(online_types, MMOP_OFFLINE, mb_count);
+
+	lock_device_hotplug();
+
+	tmp = online_types;
+	rc = walk_memory_blocks(start, size, &tmp, try_offline_memory_block);
+
+	/*
+	 * In case we succeeded to offline all memory, remove it.
 	 * This cannot fail as it cannot get onlined in the meantime.
 	 */
 	if (!rc) {
 		rc = try_remove_memory(nid, start, size);
-		WARN_ON_ONCE(rc);
+		if (rc)
+			pr_err("%s: Failed to remove memory: %d", __func__, rc);
+	}
+
+	/*
+	 * Rollback what we did. While memory onlining might theoretically fail
+	 * (nacked by a notifier), it barely ever happens.
+	 */
+	if (rc) {
+		tmp = online_types;
+		walk_memory_blocks(start, size, &tmp,
+				   try_reonline_memory_block);
 	}
 	unlock_device_hotplug();
 
+	kfree(online_types);
 	return rc;
 }
 EXPORT_SYMBOL_GPL(offline_and_remove_memory);
