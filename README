@@ -5,11 +5,9 @@ This is an experimental Android x86 Linux kernel for the orignal Xbox
 
 The kernel version is 5.13.19
 
-Linux 5.13.19 was the last kernel version with the legacy ide drivers available, since I don't know if the modern drivers work on actual hardware I have
-decided to keep a branch available that still has them in place.
+Linux 5.13.19 was the last kernel version with the legacy ide drivers available, since I don't know if the modern drivers work on actual hardware I have decided to keep a branch available that still has them in place.
 I do still have the modern drivers set as the default, but you have to option to switch back with this version.
-Newer kernels that do not have the legacy drivers at all will be in their own branches if I get them booting. This kernel does seem to work but I am only able
-to test in XEMU (Xbox emulator) at the moment so your mileage may vary. If someone can test this on hardware for me it would be appreciated.
+Newer kernels that do not have the legacy drivers at all will be in their own branches if I get them booting. This kernel does seem to work but I am only able to test in XEMU (Xbox emulator) at the moment so your mileage may vary. If someone can test this on hardware for me it would be appreciated.
 
 This kernel was originally a hybrid of these 2 kernels:
 
