@@ -3,7 +3,7 @@ This kernel works just fine as a "normal" kernel so there is no reason to have a
 
 This is an experimental Android x86 Linux kernel for the orignal Xbox
 
-The kernel version is 5.9
+The kernel version is 5.9 and is based on https://github.com/maurossi/linux/tree/kernel-5.9_si_next with the xbox patches from xbox linux
 
 It was originally a hybrid of these 2 kernels:
 
@@ -11,7 +11,7 @@ https://github.com/XboxDev/xbox-linux (Linux 5.8.1)
 
 https://github.com/maurossi/linux/tree/kernel-5.8_si_next (Linux 5.8)
 
-But it has since been updated.
+But it has since been updated. (I'm pretty much just applying the xbox patches to existing android x86 kernels)
 
 For a "normal" xbox kernel config without any Android stuff, use xbox_defconfig
 
