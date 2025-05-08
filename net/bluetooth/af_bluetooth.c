@@ -72,8 +72,8 @@ void bt_sock_reclassify_lock(struct sock *sk, int proto)
 	BUG_ON(!sock_allow_reclassification(sk));
 
 	sock_lock_init_class_and_name(sk,
-			bt_slock_key_strings[proto], &bt_slock_key[proto],
-				bt_key_strings[proto], &bt_lock_key[proto]);
+				      bt_slock_key_strings[proto], &bt_slock_key[proto],
+				      bt_key_strings[proto], &bt_lock_key[proto]);
 }
 EXPORT_SYMBOL(bt_sock_reclassify_lock);
 
@@ -108,39 +108,10 @@ void bt_sock_unregister(int proto)
 }
 EXPORT_SYMBOL(bt_sock_unregister);
 
-#ifdef CONFIG_PARANOID_NETWORK
-static inline int current_has_bt_admin(void)
-{
-	return !current_euid();
-}
-
-static inline int current_has_bt(void)
-{
-	return current_has_bt_admin();
-}
-# else
-static inline int current_has_bt_admin(void)
-{
-	return 1;
-}
-
-static inline int current_has_bt(void)
-{
-	return 1;
-}
-#endif
-
 static int bt_sock_create(struct net *net, struct socket *sock, int proto,
 			  int kern)
 {
 	int err;
-
-	if (proto == BTPROTO_RFCOMM || proto == BTPROTO_SCO ||
-			proto == BTPROTO_L2CAP) {
-		if (!current_has_bt())
-			return -EPERM;
-	} else if (!current_has_bt_admin())
-		return -EPERM;
 
 	if (net != &init_net)
 		return -EAFNOSUPPORT;
@@ -480,7 +451,7 @@ static inline __poll_t bt_accept_poll(struct sock *parent)
 }
 
 __poll_t bt_sock_poll(struct file *file, struct socket *sock,
-			  poll_table *wait)
+		      poll_table *wait)
 {
 	struct sock *sk = sock->sk;
 	__poll_t mask = 0;
@@ -507,8 +478,8 @@ __poll_t bt_sock_poll(struct file *file, struct socket *sock,
 		mask |= EPOLLHUP;
 
 	if (sk->sk_state == BT_CONNECT ||
-			sk->sk_state == BT_CONNECT2 ||
-			sk->sk_state == BT_CONFIG)
+	    sk->sk_state == BT_CONNECT2 ||
+	    sk->sk_state == BT_CONFIG)
 		return mask;
 
 	if (!test_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags) && sock_writeable(sk))
@@ -537,7 +508,7 @@ int bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		amount = sk->sk_sndbuf - sk_wmem_alloc_get(sk);
 		if (amount < 0)
 			amount = 0;
-		err = put_user(amount, (int __user *) arg);
+		err = put_user(amount, (int __user *)arg);
 		break;
 
 	case TIOCINQ:
@@ -548,7 +519,7 @@ int bt_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		skb = skb_peek(&sk->sk_receive_queue);
 		amount = skb ? skb->len : 0;
 		release_sock(sk);
-		err = put_user(amount, (int __user *) arg);
+		err = put_user(amount, (int __user *)arg);
 		break;
 
 	default:
@@ -666,7 +637,7 @@ static int bt_seq_show(struct seq_file *seq, void *v)
 	struct bt_sock_list *l = PDE_DATA(file_inode(seq->file));
 
 	if (v == SEQ_START_TOKEN) {
-		seq_puts(seq ,"sk               RefCnt Rmem   Wmem   User   Inode  Parent");
+		seq_puts(seq, "sk               RefCnt Rmem   Wmem   User   Inode  Parent");
 
 		if (l->custom_seq_show) {
 			seq_putc(seq, ' ');
@@ -686,7 +657,7 @@ static int bt_seq_show(struct seq_file *seq, void *v)
 			   sk_wmem_alloc_get(sk),
 			   from_kuid(seq_user_ns(seq), sock_i_uid(sk)),
 			   sock_i_ino(sk),
-			   bt->parent? sock_i_ino(bt->parent): 0LU);
+			   bt->parent ? sock_i_ino(bt->parent) : 0LU);
 
 		if (l->custom_seq_show) {
 			seq_putc(seq, ' ');
@@ -707,7 +678,7 @@ static const struct seq_operations bt_seq_ops = {
 
 int bt_procfs_init(struct net *net, const char *name,
 		   struct bt_sock_list *sk_list,
-		   int (* seq_show)(struct seq_file *, void *))
+		   int (*seq_show)(struct seq_file *, void *))
 {
 	sk_list->custom_seq_show = seq_show;
 
@@ -723,7 +694,7 @@ void bt_procfs_cleanup(struct net *net, const char *name)
 #else
 int bt_procfs_init(struct net *net, const char *name,
 		   struct bt_sock_list *sk_list,
-		   int (* seq_show)(struct seq_file *, void *))
+		   int (*seq_show)(struct seq_file *, void *))
 {
 	return 0;
 }

@@ -344,8 +344,6 @@ static inline int is_module_addr(void *addr)
 #define PTRS_PER_P4D	_CRST_ENTRIES
 #define PTRS_PER_PGD	_CRST_ENTRIES
 
-#define MAX_PTRS_PER_P4D	PTRS_PER_P4D
-
 /*
  * Segment table and region3 table entry encoding
  * (R = read-only, I = invalid, y = young bit):
@@ -866,6 +864,25 @@ static inline int pte_unused(pte_t pte)
 }
 
 /*
+ * Extract the pgprot value from the given pte while at the same time making it
+ * usable for kernel address space mappings where fault driven dirty and
+ * young/old accounting is not supported, i.e _PAGE_PROTECT and _PAGE_INVALID
+ * must not be set.
+ */
+static inline pgprot_t pte_pgprot(pte_t pte)
+{
+	unsigned long pte_flags = pte_val(pte) & _PAGE_CHG_MASK;
+
+	if (pte_write(pte))
+		pte_flags |= pgprot_val(PAGE_KERNEL);
+	else
+		pte_flags |= pgprot_val(PAGE_KERNEL_RO);
+	pte_flags |= pte_val(pte) & mio_wb_bit_mask;
+
+	return __pgprot(pte_flags);
+}
+
+/*
  * pgd/pmd/pte modification functions
  */
 
@@ -1219,8 +1236,8 @@ static inline pte_t mk_pte(struct page *page, pgprot_t pgprot)
 #define pud_index(address) (((address) >> PUD_SHIFT) & (PTRS_PER_PUD-1))
 #define pmd_index(address) (((address) >> PMD_SHIFT) & (PTRS_PER_PMD-1))
 
-#define p4d_deref(pud) (p4d_val(pud) & _REGION_ENTRY_ORIGIN)
-#define pgd_deref(pgd) (pgd_val(pgd) & _REGION_ENTRY_ORIGIN)
+#define p4d_deref(pud) ((unsigned long)__va(p4d_val(pud) & _REGION_ENTRY_ORIGIN))
+#define pgd_deref(pgd) ((unsigned long)__va(pgd_val(pgd) & _REGION_ENTRY_ORIGIN))
 
 static inline unsigned long pmd_deref(pmd_t pmd)
 {
@@ -1229,12 +1246,12 @@ static inline unsigned long pmd_deref(pmd_t pmd)
 	origin_mask = _SEGMENT_ENTRY_ORIGIN;
 	if (pmd_large(pmd))
 		origin_mask = _SEGMENT_ENTRY_ORIGIN_LARGE;
-	return pmd_val(pmd) & origin_mask;
+	return (unsigned long)__va(pmd_val(pmd) & origin_mask);
 }
 
 static inline unsigned long pmd_pfn(pmd_t pmd)
 {
-	return pmd_deref(pmd) >> PAGE_SHIFT;
+	return __pa(pmd_deref(pmd)) >> PAGE_SHIFT;
 }
 
 static inline unsigned long pud_deref(pud_t pud)
@@ -1244,12 +1261,12 @@ static inline unsigned long pud_deref(pud_t pud)
 	origin_mask = _REGION_ENTRY_ORIGIN;
 	if (pud_large(pud))
 		origin_mask = _REGION3_ENTRY_ORIGIN_LARGE;
-	return pud_val(pud) & origin_mask;
+	return (unsigned long)__va(pud_val(pud) & origin_mask);
 }
 
 static inline unsigned long pud_pfn(pud_t pud)
 {
-	return pud_deref(pud) >> PAGE_SHIFT;
+	return __pa(pud_deref(pud)) >> PAGE_SHIFT;
 }
 
 /*
@@ -1329,7 +1346,7 @@ static inline bool gup_fast_permitted(unsigned long start, unsigned long end)
 }
 #define gup_fast_permitted gup_fast_permitted
 
-#define pfn_pte(pfn,pgprot) mk_pte_phys(__pa((pfn) << PAGE_SHIFT),(pgprot))
+#define pfn_pte(pfn, pgprot)	mk_pte_phys(((pfn) << PAGE_SHIFT), (pgprot))
 #define pte_pfn(x) (pte_val(x) >> PAGE_SHIFT)
 #define pte_page(x) pfn_to_page(pte_pfn(x))
 
@@ -1636,7 +1653,7 @@ static inline pmd_t pmdp_collapse_flush(struct vm_area_struct *vma,
 }
 #define pmdp_collapse_flush pmdp_collapse_flush
 
-#define pfn_pmd(pfn, pgprot)	mk_pmd_phys(__pa((pfn) << PAGE_SHIFT), (pgprot))
+#define pfn_pmd(pfn, pgprot)	mk_pmd_phys(((pfn) << PAGE_SHIFT), (pgprot))
 #define mk_pmd(page, pgprot)	pfn_pmd(page_to_pfn(page), (pgprot))
 
 static inline int pmd_trans_huge(pmd_t pmd)

@@ -146,10 +146,9 @@ static struct fsnotify_event *get_one_event(struct fsnotify_group *group,
 	size_t event_size = sizeof(struct inotify_event);
 	struct fsnotify_event *event;
 
-	if (fsnotify_notify_queue_is_empty(group))
-		return NULL;
-
 	event = fsnotify_peek_first_event(group);
+	if (!event)
+		return NULL;
 
 	pr_debug("%s: group=%p event=%p\n", __func__, group, event);
 
@@ -352,7 +351,7 @@ static int inotify_find_inode(const char __user *dirname, struct path *path,
 	if (error)
 		return error;
 	/* you can only watch an inode if you have read permissions on it */
-	error = inode_permission2(path->mnt, path->dentry->d_inode, MAY_READ);
+	error = path_permission(path, MAY_READ);
 	if (error) {
 		path_put(path);
 		return error;
@@ -632,17 +631,17 @@ static struct fsnotify_group *inotify_new_group(unsigned int max_events)
 	struct fsnotify_group *group;
 	struct inotify_event_info *oevent;
 
-	group = fsnotify_alloc_group(&inotify_fsnotify_ops);
+	group = fsnotify_alloc_user_group(&inotify_fsnotify_ops);
 	if (IS_ERR(group))
 		return group;
 
-	oevent = kmalloc(sizeof(struct inotify_event_info), GFP_KERNEL);
+	oevent = kmalloc(sizeof(struct inotify_event_info), GFP_KERNEL_ACCOUNT);
 	if (unlikely(!oevent)) {
 		fsnotify_destroy_group(group);
 		return ERR_PTR(-ENOMEM);
 	}
 	group->overflow_event = &oevent->fse;
-	fsnotify_init_event(group->overflow_event, 0);
+	fsnotify_init_event(group->overflow_event);
 	oevent->mask = FS_Q_OVERFLOW;
 	oevent->wd = -1;
 	oevent->sync_cookie = 0;
@@ -708,8 +707,6 @@ SYSCALL_DEFINE3(inotify_add_watch, int, fd, const char __user *, pathname,
 	struct fsnotify_group *group;
 	struct inode *inode;
 	struct path path;
-	struct path alteredpath;
-	struct path *canonical_path = &path;
 	struct fd f;
 	int ret;
 	unsigned flags = 0;
@@ -756,22 +753,13 @@ SYSCALL_DEFINE3(inotify_add_watch, int, fd, const char __user *, pathname,
 	if (ret)
 		goto fput_and_out;
 
-	/* support stacked filesystems */
-	if(path.dentry && path.dentry->d_op) {
-		if (path.dentry->d_op->d_canonical_path) {
-			path.dentry->d_op->d_canonical_path(&path, &alteredpath);
-			canonical_path = &alteredpath;
-			path_put(&path);
-		}
-	}
-
 	/* inode held in place by reference to path; group by fget on fd */
-	inode = canonical_path->dentry->d_inode;
+	inode = path.dentry->d_inode;
 	group = f.file->private_data;
 
 	/* create/update an inode mark */
 	ret = inotify_update_watch(group, inode, mask);
-	path_put(canonical_path);
+	path_put(&path);
 fput_and_out:
 	fdput(f);
 	return ret;

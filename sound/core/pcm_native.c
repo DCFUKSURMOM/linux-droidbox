@@ -209,13 +209,13 @@ int snd_pcm_info(struct snd_pcm_substream *substream, struct snd_pcm_info *info)
 	info->device = pcm->device;
 	info->stream = substream->stream;
 	info->subdevice = substream->number;
-	strlcpy(info->id, pcm->id, sizeof(info->id));
-	strlcpy(info->name, pcm->name, sizeof(info->name));
+	strscpy(info->id, pcm->id, sizeof(info->id));
+	strscpy(info->name, pcm->name, sizeof(info->name));
 	info->dev_class = pcm->dev_class;
 	info->dev_subclass = pcm->dev_subclass;
 	info->subdevices_count = pstr->substream_count;
 	info->subdevices_avail = pstr->substream_count - pstr->substream_opened;
-	strlcpy(info->subname, substream->name, sizeof(info->subname));
+	strscpy(info->subname, substream->name, sizeof(info->subname));
 
 	return 0;
 }
@@ -246,13 +246,21 @@ static bool hw_support_mmap(struct snd_pcm_substream *substream)
 	if (!(substream->runtime->hw.info & SNDRV_PCM_INFO_MMAP))
 		return false;
 
-#if defined(CONFIG_MMU) || !defined(CONFIG_HAS_DMA)
-	if (!substream->ops->mmap &&
-	    (substream->dma_buffer.dev.type != SNDRV_DMA_TYPE_DEV &&
-	     substream->dma_buffer.dev.type != SNDRV_DMA_TYPE_DEV_UC))
-		return false;
-#endif
-	return true;
+	if (substream->ops->mmap || substream->ops->page)
+		return true;
+
+	switch (substream->dma_buffer.dev.type) {
+	case SNDRV_DMA_TYPE_UNKNOWN:
+		/* we can't know the device, so just assume that the driver does
+		 * everything right
+		 */
+		return true;
+	case SNDRV_DMA_TYPE_CONTINUOUS:
+	case SNDRV_DMA_TYPE_VMALLOC:
+		return true;
+	default:
+		return dma_can_mmap(substream->dma_buffer.dev.dev);
+	}
 }
 
 static int constrain_mask_params(struct snd_pcm_substream *substream,
@@ -584,13 +592,13 @@ static inline void snd_pcm_timer_notify(struct snd_pcm_substream *substream,
 #endif
 }
 
-static void snd_pcm_sync_stop(struct snd_pcm_substream *substream)
+void snd_pcm_sync_stop(struct snd_pcm_substream *substream, bool sync_irq)
 {
-	if (substream->runtime->stop_operating) {
+	if (substream->runtime && substream->runtime->stop_operating) {
 		substream->runtime->stop_operating = false;
-		if (substream->ops->sync_stop)
+		if (substream->ops && substream->ops->sync_stop)
 			substream->ops->sync_stop(substream);
-		else if (substream->pcm->card->sync_irq > 0)
+		else if (sync_irq && substream->pcm->card->sync_irq > 0)
 			synchronize_irq(substream->pcm->card->sync_irq);
 	}
 }
@@ -687,7 +695,7 @@ static int snd_pcm_hw_params(struct snd_pcm_substream *substream,
 		if (atomic_read(&substream->mmap_count))
 			return -EBADFD;
 
-	snd_pcm_sync_stop(substream);
+	snd_pcm_sync_stop(substream, true);
 
 	params->rmask = ~0U;
 	err = snd_pcm_hw_refine(substream, params);
@@ -810,7 +818,7 @@ static int do_hw_free(struct snd_pcm_substream *substream)
 {
 	int result = 0;
 
-	snd_pcm_sync_stop(substream);
+	snd_pcm_sync_stop(substream, true);
 	if (substream->ops->hw_free)
 		result = substream->ops->hw_free(substream);
 	if (substream->managed_buffer_alloc)
@@ -1422,9 +1430,11 @@ static int snd_pcm_do_stop(struct snd_pcm_substream *substream,
 			   snd_pcm_state_t state)
 {
 	if (substream->runtime->trigger_master == substream &&
-	    snd_pcm_running(substream))
+	    snd_pcm_running(substream)) {
 		substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_STOP);
-	return 0; /* unconditonally stop all substreams */
+		substream->runtime->stop_operating = true;
+	}
+	return 0; /* unconditionally stop all substreams */
 }
 
 static void snd_pcm_post_stop(struct snd_pcm_substream *substream,
@@ -1436,7 +1446,6 @@ static void snd_pcm_post_stop(struct snd_pcm_substream *substream,
 		runtime->status->state = state;
 		snd_pcm_timer_notify(substream, SNDRV_TIMER_EVENT_MSTOP);
 	}
-	runtime->stop_operating = true;
 	wake_up(&runtime->sleep);
 	wake_up(&runtime->tsleep);
 }
@@ -1469,7 +1478,7 @@ EXPORT_SYMBOL(snd_pcm_stop);
  * After stopping, the state is changed to SETUP.
  * Unlike snd_pcm_stop(), this affects only the given stream.
  *
- * Return: Zero if succesful, or a negative error code.
+ * Return: Zero if successful, or a negative error code.
  */
 int snd_pcm_drain_done(struct snd_pcm_substream *substream)
 {
@@ -1616,6 +1625,7 @@ static int snd_pcm_do_suspend(struct snd_pcm_substream *substream,
 	if (! snd_pcm_running(substream))
 		return 0;
 	substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_SUSPEND);
+	runtime->stop_operating = true;
 	return 0; /* suspend unconditionally */
 }
 
@@ -1673,25 +1683,26 @@ int snd_pcm_suspend_all(struct snd_pcm *pcm)
 	if (! pcm)
 		return 0;
 
-	for (stream = 0; stream < 2; stream++) {
-		for (substream = pcm->streams[stream].substream;
-		     substream; substream = substream->next) {
-			/* FIXME: the open/close code should lock this as well */
-			if (substream->runtime == NULL)
-				continue;
+	for_each_pcm_substream(pcm, stream, substream) {
+		/* FIXME: the open/close code should lock this as well */
+		if (!substream->runtime)
+			continue;
 
-			/*
-			 * Skip BE dai link PCM's that are internal and may
-			 * not have their substream ops set.
-			 */
-			if (!substream->ops)
-				continue;
+		/*
+		 * Skip BE dai link PCM's that are internal and may
+		 * not have their substream ops set.
+		 */
+		if (!substream->ops)
+			continue;
 
-			err = snd_pcm_suspend(substream);
-			if (err < 0 && err != -EBUSY)
-				return err;
-		}
+		err = snd_pcm_suspend(substream);
+		if (err < 0 && err != -EBUSY)
+			return err;
 	}
+
+	for_each_pcm_substream(pcm, stream, substream)
+		snd_pcm_sync_stop(substream, false);
+
 	return 0;
 }
 EXPORT_SYMBOL(snd_pcm_suspend_all);
@@ -1737,7 +1748,6 @@ static void snd_pcm_post_resume(struct snd_pcm_substream *substream,
 	snd_pcm_trigger_tstamp(substream);
 	runtime->status->state = runtime->status->suspended_state;
 	snd_pcm_timer_notify(substream, SNDRV_TIMER_EVENT_MRESUME);
-	snd_pcm_sync_stop(substream);
 }
 
 static const struct action_ops snd_pcm_action_resume = {
@@ -1867,7 +1877,7 @@ static int snd_pcm_do_prepare(struct snd_pcm_substream *substream,
 			      snd_pcm_state_t state)
 {
 	int err;
-	snd_pcm_sync_stop(substream);
+	snd_pcm_sync_stop(substream, true);
 	err = substream->ops->prepare(substream);
 	if (err < 0)
 		return err;
@@ -3056,9 +3066,14 @@ static int snd_pcm_ioctl_sync_ptr_compat(struct snd_pcm_substream *substream,
 		boundary = 0x7fffffff;
 	snd_pcm_stream_lock_irq(substream);
 	/* FIXME: we should consider the boundary for the sync from app */
-	if (!(sflags & SNDRV_PCM_SYNC_PTR_APPL))
-		control->appl_ptr = scontrol.appl_ptr;
-	else
+	if (!(sflags & SNDRV_PCM_SYNC_PTR_APPL)) {
+		err = pcm_lib_apply_appl_ptr(substream,
+				scontrol.appl_ptr);
+		if (err < 0) {
+			snd_pcm_stream_unlock_irq(substream);
+			return err;
+		}
+	} else
 		scontrol.appl_ptr = control->appl_ptr % boundary;
 	if (!(sflags & SNDRV_PCM_SYNC_PTR_AVAIL_MIN))
 		control->avail_min = scontrol.avail_min;

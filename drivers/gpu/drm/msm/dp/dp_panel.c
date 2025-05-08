@@ -272,7 +272,7 @@ static u8 dp_panel_get_edid_checksum(struct edid *edid)
 {
 	struct edid *last_block;
 	u8 *raw_edid;
-	bool is_edid_corrupt;
+	bool is_edid_corrupt = false;
 
 	if (!edid) {
 		DRM_ERROR("invalid edid input\n");
@@ -304,7 +304,12 @@ void dp_panel_handle_sink_request(struct dp_panel *dp_panel)
 	panel = container_of(dp_panel, struct dp_panel_private, dp_panel);
 
 	if (panel->link->sink_request & DP_TEST_LINK_EDID_READ) {
-		u8 checksum = dp_panel_get_edid_checksum(dp_panel->edid);
+		u8 checksum;
+
+		if (dp_panel->edid)
+			checksum = dp_panel_get_edid_checksum(dp_panel->edid);
+		else
+			checksum = dp_panel->connector->real_edid_checksum;
 
 		dp_link_send_edid_checksum(panel->link, checksum);
 		dp_link_send_test_response(panel->link);
@@ -409,7 +414,6 @@ int dp_panel_timing_cfg(struct dp_panel *dp_panel)
 
 int dp_panel_init_panel_info(struct dp_panel *dp_panel)
 {
-	int rc = 0;
 	struct drm_display_mode *drm_mode;
 
 	drm_mode = &dp_panel->dp_mode.drm_mode;
@@ -436,7 +440,7 @@ int dp_panel_init_panel_info(struct dp_panel *dp_panel)
 					min_t(u32, dp_panel->dp_mode.bpp, 30));
 	DRM_DEBUG_DP("updated bpp = %d\n", dp_panel->dp_mode.bpp);
 
-	return rc;
+	return 0;
 }
 
 struct dp_panel *dp_panel_get(struct dp_panel_in *in)

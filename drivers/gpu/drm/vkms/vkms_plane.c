@@ -5,9 +5,9 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_plane_helper.h>
-#include <drm/drm_gem_shmem_helper.h>
 
 #include "vkms_drv.h"
 
@@ -92,20 +92,22 @@ static const struct drm_plane_funcs vkms_plane_funcs = {
 };
 
 static void vkms_plane_atomic_update(struct drm_plane *plane,
-				     struct drm_plane_state *old_state)
+				     struct drm_atomic_state *state)
 {
+	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state,
+									   plane);
 	struct vkms_plane_state *vkms_plane_state;
-	struct drm_framebuffer *fb = plane->state->fb;
+	struct drm_framebuffer *fb = new_state->fb;
 	struct vkms_composer *composer;
 
-	if (!plane->state->crtc || !fb)
+	if (!new_state->crtc || !fb)
 		return;
 
-	vkms_plane_state = to_vkms_plane_state(plane->state);
+	vkms_plane_state = to_vkms_plane_state(new_state);
 
 	composer = vkms_plane_state->composer;
-	memcpy(&composer->src, &plane->state->src, sizeof(struct drm_rect));
-	memcpy(&composer->dst, &plane->state->dst, sizeof(struct drm_rect));
+	memcpy(&composer->src, &new_state->src, sizeof(struct drm_rect));
+	memcpy(&composer->dst, &new_state->dst, sizeof(struct drm_rect));
 	memcpy(&composer->fb, fb, sizeof(struct drm_framebuffer));
 	drm_framebuffer_get(&composer->fb);
 	composer->offset = fb->offsets[0];
@@ -114,23 +116,26 @@ static void vkms_plane_atomic_update(struct drm_plane *plane,
 }
 
 static int vkms_plane_atomic_check(struct drm_plane *plane,
-				   struct drm_plane_state *state)
+				   struct drm_atomic_state *state)
 {
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state,
+										 plane);
 	struct drm_crtc_state *crtc_state;
 	bool can_position = false;
 	int ret;
 
-	if (!state->fb || WARN_ON(!state->crtc))
+	if (!new_plane_state->fb || WARN_ON(!new_plane_state->crtc))
 		return 0;
 
-	crtc_state = drm_atomic_get_crtc_state(state->state, state->crtc);
+	crtc_state = drm_atomic_get_crtc_state(state,
+					       new_plane_state->crtc);
 	if (IS_ERR(crtc_state))
 		return PTR_ERR(crtc_state);
 
 	if (plane->type == DRM_PLANE_TYPE_CURSOR)
 		can_position = true;
 
-	ret = drm_atomic_helper_check_plane_state(state, crtc_state,
+	ret = drm_atomic_helper_check_plane_state(new_plane_state, crtc_state,
 						  DRM_PLANE_HELPER_NO_SCALING,
 						  DRM_PLANE_HELPER_NO_SCALING,
 						  can_position, true);
@@ -138,51 +143,16 @@ static int vkms_plane_atomic_check(struct drm_plane *plane,
 		return ret;
 
 	/* for now primary plane must be visible and full screen */
-	if (!state->visible && !can_position)
+	if (!new_plane_state->visible && !can_position)
 		return -EINVAL;
 
 	return 0;
 }
 
-static int vkms_prepare_fb(struct drm_plane *plane,
-			   struct drm_plane_state *state)
-{
-	struct drm_gem_object *gem_obj;
-	struct dma_buf_map map;
-	int ret;
-
-	if (!state->fb)
-		return 0;
-
-	gem_obj = drm_gem_fb_get_obj(state->fb, 0);
-	ret = drm_gem_shmem_vmap(gem_obj, &map);
-	if (ret)
-		DRM_ERROR("vmap failed: %d\n", ret);
-
-	return drm_gem_fb_prepare_fb(plane, state);
-}
-
-static void vkms_cleanup_fb(struct drm_plane *plane,
-			    struct drm_plane_state *old_state)
-{
-	struct drm_gem_object *gem_obj;
-	struct drm_gem_shmem_object *shmem_obj;
-	struct dma_buf_map map;
-
-	if (!old_state->fb)
-		return;
-
-	gem_obj = drm_gem_fb_get_obj(old_state->fb, 0);
-	shmem_obj = to_drm_gem_shmem_obj(drm_gem_fb_get_obj(old_state->fb, 0));
-	dma_buf_map_set_vaddr(&map, shmem_obj->vaddr);
-	drm_gem_shmem_vunmap(gem_obj, &map);
-}
-
 static const struct drm_plane_helper_funcs vkms_primary_helper_funcs = {
 	.atomic_update		= vkms_plane_atomic_update,
 	.atomic_check		= vkms_plane_atomic_check,
-	.prepare_fb		= vkms_prepare_fb,
-	.cleanup_fb		= vkms_cleanup_fb,
+	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
 };
 
 struct drm_plane *vkms_plane_init(struct vkms_device *vkmsdev,

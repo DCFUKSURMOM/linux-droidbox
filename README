@@ -3,7 +3,7 @@ This kernel works just fine as a "normal" kernel so there is no reason to have a
 
 This is an experimental Android x86 Linux kernel for the orignal Xbox
 
-The kernel version is 5.11 and is based on https://github.com/maurossi/linux/tree/kernel-5.11 with the xbox patches from xbox linux
+The kernel version is 5.13.19
 
 It was originally a hybrid of these 2 kernels:
 
@@ -19,6 +19,6 @@ For a xbox kernel config with Android settings enabled, use droidbox_defconfig, 
 
 The normal androidx86 defconfigs are also available but these are standard pc configs and will not work on the Xbox.
 
-There is nothing stopping you from building this kernel for any hardware supported by stock Linux 5.8 (that I'm aware of at least)
+There is nothing stopping you from building this kernel for any hardware supported by stock Linux 5.13.19 (that I'm aware of at least)
 
 The current droidbox logo is just a placeholder, something I quickly made in GIMP to add a personal touch, it may be replaced in the future.

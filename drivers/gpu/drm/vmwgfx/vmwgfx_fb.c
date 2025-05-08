@@ -142,14 +142,14 @@ static int vmw_fb_check_var(struct fb_var_screeninfo *var,
 
 	if ((var->xoffset + var->xres) > par->max_width ||
 	    (var->yoffset + var->yres) > par->max_height) {
-		DRM_ERROR("Requested geom can not fit in framebuffer %d > %d || %d > %d\n", var->xoffset + var->xres, par->max_width, var->yoffset + var->yres, par->max_height);
+		DRM_ERROR("Requested geom can not fit in framebuffer\n");
 		return -EINVAL;
 	}
 
 	if (!vmw_kms_validate_mode_vram(vmw_priv,
 					var->xres * var->bits_per_pixel/8,
 					var->yoffset + var->yres)) {
-		DRM_ERROR("Requested geom %d,%d can not fit in framebuffer vmw_kms_validate_mode_vram\n", var->xres * var->bits_per_pixel/8, var->yoffset + var->yres);
+		DRM_ERROR("Requested geom can not fit in framebuffer\n");
 		return -EINVAL;
 	}
 
@@ -258,7 +258,7 @@ out_unreserve:
 	if (w && h) {
 		WARN_ON_ONCE(par->set_fb->funcs->dirty(cur_fb, NULL, 0, 0,
 						       &clip, 1));
-		vmw_fifo_flush(vmw_priv, false);
+		vmw_cmd_flush(vmw_priv, false);
 	}
 out_unlock:
 	mutex_unlock(&par->bo_mutex);
@@ -303,7 +303,7 @@ static int vmw_fb_pan_display(struct fb_var_screeninfo *var,
 
 	if ((var->xoffset + var->xres) > var->xres_virtual ||
 	    (var->yoffset + var->yres) > var->yres_virtual) {
-		DRM_ERROR("Requested panning can not fit in framebuffer %d > %d || %d > %d\n", var->xoffset + var->xres, var->xres_virtual, var->yoffset + var->yres, var->yres_virtual);
+		DRM_ERROR("Requested panning can not fit in framebuffer\n");
 		return -EINVAL;
 	}
 
@@ -481,7 +481,7 @@ static int vmw_fb_kms_detach(struct vmw_fb_par *par,
 			DRM_ERROR("Could not unset a mode.\n");
 			return ret;
 		}
-		drm_mode_destroy(par->vmw_priv->dev, par->set_mode);
+		drm_mode_destroy(&par->vmw_priv->drm, par->set_mode);
 		par->set_mode = NULL;
 	}
 
@@ -567,7 +567,7 @@ static int vmw_fb_set_par(struct fb_info *info)
 	struct drm_display_mode *mode;
 	int ret;
 
-	mode = drm_mode_duplicate(vmw_priv->dev, &new_mode);
+	mode = drm_mode_duplicate(&vmw_priv->drm, &new_mode);
 	if (!mode) {
 		DRM_ERROR("Could not create new fb mode.\n");
 		return -ENOMEM;
@@ -581,7 +581,7 @@ static int vmw_fb_set_par(struct fb_info *info)
 					mode->hdisplay *
 					DIV_ROUND_UP(var->bits_per_pixel, 8),
 					mode->vdisplay)) {
-		drm_mode_destroy(vmw_priv->dev, mode);
+		drm_mode_destroy(&vmw_priv->drm, mode);
 		return -EINVAL;
 	}
 
@@ -615,7 +615,7 @@ static int vmw_fb_set_par(struct fb_info *info)
 
 out_unlock:
 	if (par->set_mode)
-		drm_mode_destroy(vmw_priv->dev, par->set_mode);
+		drm_mode_destroy(&vmw_priv->drm, par->set_mode);
 	par->set_mode = mode;
 
 	mutex_unlock(&par->bo_mutex);
@@ -638,7 +638,7 @@ static const struct fb_ops vmw_fb_ops = {
 
 int vmw_fb_init(struct vmw_private *vmw_priv)
 {
-	struct device *device = &vmw_priv->dev->pdev->dev;
+	struct device *device = vmw_priv->drm.dev;
 	struct vmw_fb_par *par;
 	struct fb_info *info;
 	unsigned fb_width, fb_height;

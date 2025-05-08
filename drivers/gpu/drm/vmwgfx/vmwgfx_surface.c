@@ -41,10 +41,12 @@
 /**
  * struct vmw_user_surface - User-space visible surface resource
  *
+ * @prime:          The TTM prime object.
  * @base:           The TTM base object handling user-space visibility.
  * @srf:            The surface metadata.
  * @size:           TTM accounting size for the surface.
- * @master: master of the creating client. Used for security check.
+ * @master:         Master of the creating client. Used for security check.
+ * @backup_base:    The TTM base object of the backup buffer.
  */
 struct vmw_user_surface {
 	struct ttm_prime_object prime;
@@ -69,7 +71,7 @@ struct vmw_surface_offset {
 };
 
 /**
- * vmw_surface_dirty - Surface dirty-tracker
+ * struct vmw_surface_dirty - Surface dirty-tracker
  * @cache: Cached layout information of the surface.
  * @size: Accounting size for the struct vmw_surface_dirty.
  * @num_subres: Number of subresources.
@@ -162,7 +164,7 @@ static const struct vmw_res_func vmw_gb_surface_func = {
 	.clean = vmw_surface_clean,
 };
 
-/**
+/*
  * struct vmw_surface_dma - SVGA3D DMA command
  */
 struct vmw_surface_dma {
@@ -172,7 +174,7 @@ struct vmw_surface_dma {
 	SVGA3dCmdSurfaceDMASuffix suffix;
 };
 
-/**
+/*
  * struct vmw_surface_define - SVGA3D Surface Define command
  */
 struct vmw_surface_define {
@@ -180,7 +182,7 @@ struct vmw_surface_define {
 	SVGA3dCmdDefineSurface body;
 };
 
-/**
+/*
  * struct vmw_surface_destroy - SVGA3D Surface Destroy command
  */
 struct vmw_surface_destroy {
@@ -372,12 +374,12 @@ static void vmw_hw_surface_destroy(struct vmw_resource *res)
 
 	if (res->id != -1) {
 
-		cmd = VMW_FIFO_RESERVE(dev_priv, vmw_surface_destroy_size());
+		cmd = VMW_CMD_RESERVE(dev_priv, vmw_surface_destroy_size());
 		if (unlikely(!cmd))
 			return;
 
 		vmw_surface_destroy_encode(res->id, cmd);
-		vmw_fifo_commit(dev_priv, vmw_surface_destroy_size());
+		vmw_cmd_commit(dev_priv, vmw_surface_destroy_size());
 
 		/*
 		 * used_memory_size_atomic, or separate lock
@@ -440,14 +442,14 @@ static int vmw_legacy_srf_create(struct vmw_resource *res)
 	 */
 
 	submit_size = vmw_surface_define_size(srf);
-	cmd = VMW_FIFO_RESERVE(dev_priv, submit_size);
+	cmd = VMW_CMD_RESERVE(dev_priv, submit_size);
 	if (unlikely(!cmd)) {
 		ret = -ENOMEM;
 		goto out_no_fifo;
 	}
 
 	vmw_surface_define_encode(srf, cmd);
-	vmw_fifo_commit(dev_priv, submit_size);
+	vmw_cmd_commit(dev_priv, submit_size);
 	vmw_fifo_resource_inc(dev_priv);
 
 	/*
@@ -492,14 +494,14 @@ static int vmw_legacy_srf_dma(struct vmw_resource *res,
 
 	BUG_ON(!val_buf->bo);
 	submit_size = vmw_surface_dma_size(srf);
-	cmd = VMW_FIFO_RESERVE(dev_priv, submit_size);
+	cmd = VMW_CMD_RESERVE(dev_priv, submit_size);
 	if (unlikely(!cmd))
 		return -ENOMEM;
 
 	vmw_bo_get_guest_ptr(val_buf->bo, &ptr);
 	vmw_surface_dma_encode(srf, cmd, &ptr, bind);
 
-	vmw_fifo_commit(dev_priv, submit_size);
+	vmw_cmd_commit(dev_priv, submit_size);
 
 	/*
 	 * Create a fence object and fence the backup buffer.
@@ -544,6 +546,7 @@ static int vmw_legacy_srf_bind(struct vmw_resource *res,
  *
  * @res:            Pointer to a struct vmw_res embedded in a struct
  *                  vmw_surface.
+ * @readback:       Readback - only true if dirty
  * @val_buf:        Pointer to a struct ttm_validate_buffer containing
  *                  information about the backup buffer.
  *
@@ -578,12 +581,12 @@ static int vmw_legacy_srf_destroy(struct vmw_resource *res)
 	 */
 
 	submit_size = vmw_surface_destroy_size();
-	cmd = VMW_FIFO_RESERVE(dev_priv, submit_size);
+	cmd = VMW_CMD_RESERVE(dev_priv, submit_size);
 	if (unlikely(!cmd))
 		return -ENOMEM;
 
 	vmw_surface_destroy_encode(res->id, cmd);
-	vmw_fifo_commit(dev_priv, submit_size);
+	vmw_cmd_commit(dev_priv, submit_size);
 
 	/*
 	 * Surface memory usage accounting.
@@ -866,7 +869,7 @@ int vmw_surface_define_ioctl(struct drm_device *dev, void *data,
 	user_srf->prime.base.shareable = false;
 	user_srf->prime.base.tfile = NULL;
 	if (drm_is_primary_client(file_priv))
-		user_srf->master = drm_master_get(file_priv->master);
+		user_srf->master = drm_file_get_master(file_priv);
 
 	/**
 	 * From this point, the generic resource management functions
@@ -938,16 +941,12 @@ vmw_surface_handle_reference(struct vmw_private *dev_priv,
 	uint32_t handle;
 	struct ttm_base_object *base;
 	int ret;
-	bool require_exist = false;
 
 	if (handle_type == DRM_VMW_HANDLE_PRIME) {
 		ret = ttm_prime_fd_to_handle(tfile, u_handle, &handle);
 		if (unlikely(ret != 0))
 			return ret;
 	} else {
-		if (unlikely(drm_is_render_client(file_priv)))
-			require_exist = true;
-
 		handle = u_handle;
 	}
 
@@ -964,17 +963,28 @@ vmw_surface_handle_reference(struct vmw_private *dev_priv,
 	}
 
 	if (handle_type != DRM_VMW_HANDLE_PRIME) {
+		bool require_exist = false;
+
 		user_srf = container_of(base, struct vmw_user_surface,
 					prime.base);
 
+		/* Error out if we are unauthenticated primary */
+		if (drm_is_primary_client(file_priv) &&
+		    !file_priv->authenticated) {
+			ret = -EACCES;
+			goto out_bad_resource;
+		}
+
 		/*
-		 * RELAXED FOR TEST: Make sure the surface creator has the same
+		 * Make sure the surface creator has the same
 		 * authenticating master, or is already registered with us.
-		 *
+		 */
 		if (drm_is_primary_client(file_priv) &&
 		    user_srf->master != file_priv->master)
 			require_exist = true;
-		 */
+
+		if (unlikely(drm_is_render_client(file_priv)))
+			require_exist = true;
 
 		ret = ttm_ref_object_add(tfile, base, TTM_REF_USAGE, NULL,
 					 require_exist);
@@ -1053,8 +1063,8 @@ int vmw_surface_reference_ioctl(struct drm_device *dev, void *data,
 /**
  * vmw_surface_define_encode - Encode a surface_define command.
  *
- * @srf: Pointer to a struct vmw_surface object.
- * @cmd_space: Pointer to memory area in which the commands should be encoded.
+ * @res:        Pointer to a struct vmw_resource embedded in a struct
+ *              vmw_surface.
  */
 static int vmw_gb_surface_create(struct vmw_resource *res)
 {
@@ -1114,7 +1124,7 @@ static int vmw_gb_surface_create(struct vmw_resource *res)
 		submit_len = sizeof(*cmd);
 	}
 
-	cmd = VMW_FIFO_RESERVE(dev_priv, submit_len);
+	cmd = VMW_CMD_RESERVE(dev_priv, submit_len);
 	cmd2 = (typeof(cmd2))cmd;
 	cmd3 = (typeof(cmd3))cmd;
 	cmd4 = (typeof(cmd4))cmd;
@@ -1181,7 +1191,7 @@ static int vmw_gb_surface_create(struct vmw_resource *res)
 		cmd->body.size.depth = metadata->base_size.depth;
 	}
 
-	vmw_fifo_commit(dev_priv, submit_len);
+	vmw_cmd_commit(dev_priv, submit_len);
 
 	return 0;
 
@@ -1212,7 +1222,7 @@ static int vmw_gb_surface_bind(struct vmw_resource *res,
 
 	submit_size = sizeof(*cmd1) + (res->backup_dirty ? sizeof(*cmd2) : 0);
 
-	cmd1 = VMW_FIFO_RESERVE(dev_priv, submit_size);
+	cmd1 = VMW_CMD_RESERVE(dev_priv, submit_size);
 	if (unlikely(!cmd1))
 		return -ENOMEM;
 
@@ -1226,7 +1236,7 @@ static int vmw_gb_surface_bind(struct vmw_resource *res,
 		cmd2->header.size = sizeof(cmd2->body);
 		cmd2->body.sid = res->id;
 	}
-	vmw_fifo_commit(dev_priv, submit_size);
+	vmw_cmd_commit(dev_priv, submit_size);
 
 	if (res->backup->dirty && res->backup_dirty) {
 		/* We've just made a full upload. Cear dirty regions. */
@@ -1265,7 +1275,7 @@ static int vmw_gb_surface_unbind(struct vmw_resource *res,
 	BUG_ON(bo->mem.mem_type != VMW_PL_MOB);
 
 	submit_size = sizeof(*cmd3) + (readback ? sizeof(*cmd1) : sizeof(*cmd2));
-	cmd = VMW_FIFO_RESERVE(dev_priv, submit_size);
+	cmd = VMW_CMD_RESERVE(dev_priv, submit_size);
 	if (unlikely(!cmd))
 		return -ENOMEM;
 
@@ -1288,7 +1298,7 @@ static int vmw_gb_surface_unbind(struct vmw_resource *res,
 	cmd3->body.sid = res->id;
 	cmd3->body.mobid = SVGA3D_INVALID_ID;
 
-	vmw_fifo_commit(dev_priv, submit_size);
+	vmw_cmd_commit(dev_priv, submit_size);
 
 	/*
 	 * Create a fence object and fence the backup buffer.
@@ -1321,7 +1331,7 @@ static int vmw_gb_surface_destroy(struct vmw_resource *res)
 	vmw_view_surface_list_destroy(dev_priv, &srf->view_list);
 	vmw_binding_res_list_scrub(&res->binding_head);
 
-	cmd = VMW_FIFO_RESERVE(dev_priv, sizeof(*cmd));
+	cmd = VMW_CMD_RESERVE(dev_priv, sizeof(*cmd));
 	if (unlikely(!cmd)) {
 		mutex_unlock(&dev_priv->binding_mutex);
 		return -ENOMEM;
@@ -1330,7 +1340,7 @@ static int vmw_gb_surface_destroy(struct vmw_resource *res)
 	cmd->header.id = SVGA_3D_CMD_DESTROY_GB_SURFACE;
 	cmd->header.size = sizeof(cmd->body);
 	cmd->body.sid = res->id;
-	vmw_fifo_commit(dev_priv, sizeof(*cmd));
+	vmw_cmd_commit(dev_priv, sizeof(*cmd));
 	mutex_unlock(&dev_priv->binding_mutex);
 	vmw_resource_release_id(res);
 	vmw_fifo_resource_dec(dev_priv);
@@ -1530,7 +1540,7 @@ vmw_gb_surface_define_internal(struct drm_device *dev,
 
 	user_srf = container_of(srf, struct vmw_user_surface, srf);
 	if (drm_is_primary_client(file_priv))
-		user_srf->master = drm_master_get(file_priv->master);
+		user_srf->master = drm_file_get_master(file_priv);
 
 	ret = ttm_read_lock(&dev_priv->reservation_sem, true);
 	if (unlikely(ret != 0))
@@ -1543,8 +1553,7 @@ vmw_gb_surface_define_internal(struct drm_device *dev,
 					 &res->backup,
 					 &user_srf->backup_base);
 		if (ret == 0) {
-			if (res->backup->base.num_pages * PAGE_SIZE <
-			    res->backup_size) {
+			if (res->backup->base.base.size < res->backup_size) {
 				VMW_DEBUG_USER("Surface backup buffer too small.\n");
 				vmw_bo_unreference(&res->backup);
 				ret = -EINVAL;
@@ -1607,7 +1616,7 @@ vmw_gb_surface_define_internal(struct drm_device *dev,
 	if (res->backup) {
 		rep->buffer_map_handle =
 			drm_vma_node_offset_addr(&res->backup->base.base.vma_node);
-		rep->buffer_size = res->backup->base.num_pages * PAGE_SIZE;
+		rep->buffer_size = res->backup->base.base.size;
 		rep->buffer_handle = backup_handle;
 	} else {
 		rep->buffer_map_handle = 0;
@@ -1685,7 +1694,7 @@ vmw_gb_surface_reference_internal(struct drm_device *dev,
 	rep->crep.buffer_handle = backup_handle;
 	rep->crep.buffer_map_handle =
 		drm_vma_node_offset_addr(&srf->res.backup->base.base.vma_node);
-	rep->crep.buffer_size = srf->res.backup->base.num_pages * PAGE_SIZE;
+	rep->crep.buffer_size = srf->res.backup->base.base.size;
 
 	rep->creq.version = drm_vmw_gb_surface_v1;
 	rep->creq.svga3d_flags_upper_32_bits =
@@ -1795,6 +1804,19 @@ static void vmw_surface_tex_dirty_range_add(struct vmw_resource *res,
 	svga3dsurface_get_loc(cache, &loc2, end - 1);
 	svga3dsurface_inc_loc(cache, &loc2);
 
+	if (loc1.sheet != loc2.sheet) {
+		u32 sub_res;
+
+		/*
+		 * Multiple multisample sheets. To do this in an optimized
+		 * fashion, compute the dirty region for each sheet and the
+		 * resulting union. Since this is not a common case, just dirty
+		 * the whole surface.
+		 */
+		for (sub_res = 0; sub_res < dirty->num_subres; ++sub_res)
+			vmw_subres_dirty_full(dirty, sub_res);
+		return;
+	}
 	if (loc1.sub_resource + 1 == loc2.sub_resource) {
 		/* Dirty range covers a single sub-resource */
 		vmw_subres_dirty_add(dirty, &loc1, &loc2);
@@ -1861,7 +1883,6 @@ static void vmw_surface_dirty_range_add(struct vmw_resource *res, size_t start,
 static int vmw_surface_dirty_sync(struct vmw_resource *res)
 {
 	struct vmw_private *dev_priv = res->dev_priv;
-	bool has_dx = 0;
 	u32 i, num_dirty;
 	struct vmw_surface_dirty *dirty =
 		(struct vmw_surface_dirty *) res->dirty;
@@ -1888,8 +1909,8 @@ static int vmw_surface_dirty_sync(struct vmw_resource *res)
 	if (!num_dirty)
 		goto out;
 
-	alloc_size = num_dirty * ((has_dx) ? sizeof(*cmd1) : sizeof(*cmd2));
-	cmd = VMW_FIFO_RESERVE(dev_priv, alloc_size);
+	alloc_size = num_dirty * ((has_sm4_context(dev_priv)) ? sizeof(*cmd1) : sizeof(*cmd2));
+	cmd = VMW_CMD_RESERVE(dev_priv, alloc_size);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -1906,7 +1927,7 @@ static int vmw_surface_dirty_sync(struct vmw_resource *res)
 		 * DX_UPDATE_SUBRESOURCE is aware of array surfaces.
 		 * UPDATE_GB_IMAGE is not.
 		 */
-		if (has_dx) {
+		if (has_sm4_context(dev_priv)) {
 			cmd1->header.id = SVGA_3D_CMD_DX_UPDATE_SUBRESOURCE;
 			cmd1->header.size = sizeof(cmd1->body);
 			cmd1->body.sid = res->id;
@@ -1925,7 +1946,7 @@ static int vmw_surface_dirty_sync(struct vmw_resource *res)
 		}
 
 	}
-	vmw_fifo_commit(dev_priv, alloc_size);
+	vmw_cmd_commit(dev_priv, alloc_size);
  out:
 	memset(&dirty->boxes[0], 0, sizeof(dirty->boxes[0]) *
 	       dirty->num_subres);
@@ -2025,14 +2046,14 @@ static int vmw_surface_clean(struct vmw_resource *res)
 	} *cmd;
 
 	alloc_size = sizeof(*cmd);
-	cmd = VMW_FIFO_RESERVE(dev_priv, alloc_size);
+	cmd = VMW_CMD_RESERVE(dev_priv, alloc_size);
 	if (!cmd)
 		return -ENOMEM;
 
 	cmd->header.id = SVGA_3D_CMD_READBACK_GB_SURFACE;
 	cmd->header.size = sizeof(cmd->body);
 	cmd->body.sid = res->id;
-	vmw_fifo_commit(dev_priv, alloc_size);
+	vmw_cmd_commit(dev_priv, alloc_size);
 
 	return 0;
 }

@@ -324,6 +324,10 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	  HID_BATTERY_QUIRK_IGNORE },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ELAN, USB_DEVICE_ID_ASUS_UX550_TOUCHSCREEN),
 	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_SPECTRE_X360_15),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_SURFACE_GO_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
 	{}
 };
 
@@ -415,8 +419,6 @@ static int hidinput_get_battery_property(struct power_supply *psy,
 
 		if (dev->battery_status == HID_BATTERY_UNKNOWN)
 			val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
-		else if (dev->battery_capacity == 100)
-			val->intval = POWER_SUPPLY_STATUS_FULL;
 		else
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		break;
@@ -433,7 +435,8 @@ static int hidinput_get_battery_property(struct power_supply *psy,
 	return ret;
 }
 
-static int hidinput_setup_battery(struct hid_device *dev, unsigned report_type, struct hid_field *field)
+static int hidinput_setup_battery(struct hid_device *dev, unsigned report_type,
+				  struct hid_field *field, bool is_percentage)
 {
 	struct power_supply_desc *psy_desc;
 	struct power_supply_config psy_cfg = { .drv_data = dev, };
@@ -473,7 +476,7 @@ static int hidinput_setup_battery(struct hid_device *dev, unsigned report_type, 
 	min = field->logical_minimum;
 	max = field->logical_maximum;
 
-	if (quirks & HID_BATTERY_QUIRK_PERCENT) {
+	if (is_percentage || (quirks & HID_BATTERY_QUIRK_PERCENT)) {
 		min = 0;
 		max = 100;
 	}
@@ -550,7 +553,7 @@ static void hidinput_update_battery(struct hid_device *dev, int value)
 }
 #else  /* !CONFIG_HID_BATTERY_STRENGTH */
 static int hidinput_setup_battery(struct hid_device *dev, unsigned report_type,
-				  struct hid_field *field)
+				  struct hid_field *field, bool is_percentage)
 {
 	return 0;
 }
@@ -574,8 +577,7 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 
 	field->hidinput = hidinput;
 
-	if ((field->flags & HID_MAIN_ITEM_CONSTANT) &&
-			(usage->hid & HID_USAGE_PAGE) != HID_UP_ASUSVENDOR)
+	if (field->flags & HID_MAIN_ITEM_CONSTANT)
 		goto ignore;
 
 	/* Ignore if report count is out of bounds. */
@@ -805,7 +807,7 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			break;
 
 		case 0x3b: /* Battery Strength */
-			hidinput_setup_battery(device, HID_INPUT_REPORT, field);
+			hidinput_setup_battery(device, HID_INPUT_REPORT, field, false);
 			usage->type = EV_PWR;
 			return;
 
@@ -962,6 +964,9 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 
 		case 0x0cd: map_key_clear(KEY_PLAYPAUSE);	break;
 		case 0x0cf: map_key_clear(KEY_VOICECOMMAND);	break;
+
+		case 0x0d9: map_key_clear(KEY_EMOJI_PICKER);	break;
+
 		case 0x0e0: map_abs_clear(ABS_VOLUME);		break;
 		case 0x0e2: map_key_clear(KEY_MUTE);		break;
 		case 0x0e5: map_key_clear(KEY_BASSBOOST);	break;
@@ -1067,7 +1072,16 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	case HID_UP_GENDEVCTRLS:
 		switch (usage->hid) {
 		case HID_DC_BATTERYSTRENGTH:
-			hidinput_setup_battery(device, HID_INPUT_REPORT, field);
+			hidinput_setup_battery(device, HID_INPUT_REPORT, field, false);
+			usage->type = EV_PWR;
+			return;
+		}
+		goto unknown;
+
+	case HID_UP_BATTERY:
+		switch (usage->hid) {
+		case HID_BAT_ABSOLUTESTATEOFCHARGE:
+			hidinput_setup_battery(device, HID_INPUT_REPORT, field, true);
 			usage->type = EV_PWR;
 			return;
 		}
@@ -1119,17 +1133,6 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	case HID_UP_PID:
 		switch (usage->hid & HID_USAGE) {
 		case 0xa4: map_key_clear(BTN_DEAD);	break;
-		default: goto ignore;
-		}
-		break;
-
-	case HID_UP_ASUSVENDOR:
-		switch (usage->hid & HID_USAGE) {
-		case 0x06C: map_key_clear(KEY_SLEEP);		break; /* Fn+F1: Sleep */
-		case 0x088: map_key_clear(KEY_WLAN);		break; /* Fn+F2: Wifi & BT */
-		case 0x010: map_key_clear(KEY_BRIGHTNESSDOWN);	break; /* Fn+F5: Brightness down */
-		case 0x020: map_key_clear(KEY_BRIGHTNESSUP);	break; /* Fn+F6: Brightness up */
-		case 0x06B: map_key_clear(KEY_F24);		break; /* Fn+F9: Touchpad */
 		default: goto ignore;
 		}
 		break;
@@ -1682,7 +1685,7 @@ static void report_features(struct hid_device *hid)
 				/* Verify if Battery Strength feature is available */
 				if (usage->hid == HID_DC_BATTERYSTRENGTH)
 					hidinput_setup_battery(hid, HID_FEATURE_REPORT,
-							       rep->field[i]);
+							       rep->field[i], false);
 
 				if (drv->feature_mapping)
 					drv->feature_mapping(hid, rep->field[i], usage);
@@ -1866,6 +1869,16 @@ static struct hid_input *hidinput_match_application(struct hid_report *report)
 	list_for_each_entry(hidinput, &hid->inputs, list) {
 		if (hidinput->application == report->application)
 			return hidinput;
+
+		/*
+		 * Keep SystemControl and ConsumerControl applications together
+		 * with the main keyboard, if present.
+		 */
+		if ((report->application == HID_GD_SYSTEM_CONTROL ||
+		     report->application == HID_CP_CONSUMER_CONTROL) &&
+		    hidinput->application == HID_GD_KEYBOARD) {
+			return hidinput;
+		}
 	}
 
 	return NULL;

@@ -918,6 +918,7 @@ static int mclk_enable(struct clk_hw *hw)
 	struct mcam_camera *cam = container_of(hw, struct mcam_camera, mclk_hw);
 	int mclk_src;
 	int mclk_div;
+	int ret;
 
 	/*
 	 * Clock the sensor appropriately.  Controller clock should
@@ -931,6 +932,9 @@ static int mclk_enable(struct clk_hw *hw)
 		mclk_div = 2;
 	}
 
+	ret = pm_runtime_resume_and_get(cam->dev);
+	if (ret < 0)
+		return ret;
 	clk_enable(cam->clk[0]);
 	mcam_reg_write(cam, REG_CLKCTRL, (mclk_src << 29) | mclk_div);
 	mcam_ctlr_power_up(cam);
@@ -944,6 +948,7 @@ static void mclk_disable(struct clk_hw *hw)
 
 	mcam_ctlr_power_down(cam);
 	clk_disable(cam->clk[0]);
+	pm_runtime_put(cam->dev);
 }
 
 static unsigned long mclk_recalc_rate(struct clk_hw *hw,
@@ -1609,7 +1614,9 @@ static int mcam_v4l_open(struct file *filp)
 		ret = sensor_call(cam, core, s_power, 1);
 		if (ret)
 			goto out;
-		pm_runtime_get_sync(cam->dev);
+		ret = pm_runtime_resume_and_get(cam->dev);
+		if (ret < 0)
+			goto out;
 		__mcam_cam_reset(cam);
 		mcam_set_config_needed(cam, 1);
 	}
@@ -1865,16 +1872,6 @@ int mccic_register(struct mcam_camera *cam)
 	mcam_set_config_needed(cam, 1);
 	cam->pix_format = mcam_def_pix_format;
 	cam->mbus_code = mcam_def_mbus_code;
-
-	/*
-	 * Register sensor notifier.
-	 */
-	v4l2_async_notifier_init(&cam->notifier);
-	ret = v4l2_async_notifier_add_subdev(&cam->notifier, &cam->asd);
-	if (ret) {
-		cam_warn(cam, "failed to add subdev to a notifier");
-		goto out;
-	}
 
 	cam->notifier.ops = &mccic_notify_ops;
 	ret = v4l2_async_notifier_register(&cam->v4l2_dev, &cam->notifier);

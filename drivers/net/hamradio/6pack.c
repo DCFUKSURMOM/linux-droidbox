@@ -171,11 +171,6 @@ static void sp_encaps(struct sixpack *sp, unsigned char *icp, int len)
 		goto out_drop;
 	}
 
-	if (len > sp->mtu) {	/* sp->mtu = AX25_MTU = max. PACLEN = 256 */
-		msg = "oversized transmit packet!";
-		goto out_drop;
-	}
-
 	if (p[0] > 5) {
 		msg = "invalid KISS command";
 		goto out_drop;
@@ -749,7 +744,6 @@ static int sixpack_ioctl(struct tty_struct *tty, struct file *file,
 
 static struct tty_ldisc_ops sp_ldisc = {
 	.owner		= THIS_MODULE,
-	.magic		= TTY_LDISC_MAGIC,
 	.name		= "6pack",
 	.open		= sixpack_open,
 	.close		= sixpack_close,
@@ -836,6 +830,12 @@ static void decode_data(struct sixpack *sp, unsigned char inbyte)
 	if (sp->rx_count != 3) {
 		sp->raw_buf[sp->rx_count++] = inbyte;
 
+		return;
+	}
+
+	if (sp->rx_count_cooked + 2 >= sizeof(sp->cooked_buf)) {
+		pr_err("6pack: cooked buffer overrun, data loss\n");
+		sp->rx_count = 0;
 		return;
 	}
 

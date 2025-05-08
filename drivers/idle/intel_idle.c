@@ -37,7 +37,7 @@
  */
 
 /* un-comment DEBUG to enable pr_debug() statements */
-#define DEBUG
+/* #define DEBUG */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -254,7 +254,7 @@ static struct cpuidle_state byt_cstates[] __initdata = {
 	{
 		.name = "C6N",
 		.desc = "MWAIT 0x58",
-		.flags = MWAIT2flg(0x58) | CPUIDLE_FLAG_UNUSABLE,
+		.flags = MWAIT2flg(0x58) | CPUIDLE_FLAG_TLB_FLUSHED,
 		.exit_latency = 300,
 		.target_residency = 275,
 		.enter = &intel_idle,
@@ -262,7 +262,7 @@ static struct cpuidle_state byt_cstates[] __initdata = {
 	{
 		.name = "C6S",
 		.desc = "MWAIT 0x52",
-		.flags = MWAIT2flg(0x52) | CPUIDLE_FLAG_UNUSABLE,
+		.flags = MWAIT2flg(0x52) | CPUIDLE_FLAG_TLB_FLUSHED,
 		.exit_latency = 500,
 		.target_residency = 560,
 		.enter = &intel_idle,
@@ -744,8 +744,8 @@ static struct cpuidle_state icx_cstates[] __initdata = {
 		.name = "C6",
 		.desc = "MWAIT 0x20",
 		.flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
-		.exit_latency = 128,
-		.target_residency = 384,
+		.exit_latency = 170,
+		.target_residency = 600,
 		.enter = &intel_idle,
 		.enter_s2idle = intel_idle_s2idle, },
 	{
@@ -1156,6 +1156,7 @@ static const struct x86_cpu_id intel_idle_ids[] __initconst = {
 	X86_MATCH_INTEL_FAM6_MODEL(KABYLAKE,		&idle_cpu_skl),
 	X86_MATCH_INTEL_FAM6_MODEL(SKYLAKE_X,		&idle_cpu_skx),
 	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_X,		&idle_cpu_icx),
+	X86_MATCH_INTEL_FAM6_MODEL(ICELAKE_D,		&idle_cpu_icx),
 	X86_MATCH_INTEL_FAM6_MODEL(XEON_PHI_KNL,	&idle_cpu_knl),
 	X86_MATCH_INTEL_FAM6_MODEL(XEON_PHI_KNM,	&idle_cpu_knl),
 	X86_MATCH_INTEL_FAM6_MODEL(ATOM_GOLDMONT,	&idle_cpu_bxt),

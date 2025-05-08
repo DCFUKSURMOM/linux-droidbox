@@ -24,7 +24,6 @@
  *
  */
 
-#include <linux/dma-fence-array.h>
 #include <linux/ktime.h>
 #include <linux/hrtimer.h>
 #include <linux/sched/signal.h>
@@ -339,62 +338,69 @@ nouveau_fence_wait(struct nouveau_fence *fence, bool lazy, bool intr)
 		return 0;
 }
 
-static int
-__nouveau_fence_sync(struct dma_fence *fence, struct nouveau_channel *chan,
-		     bool intr)
+int
+nouveau_fence_sync(struct nouveau_bo *nvbo, struct nouveau_channel *chan, bool exclusive, bool intr)
 {
 	struct nouveau_fence_chan *fctx = chan->fence;
-	struct nouveau_channel *prev = NULL;
+	struct dma_fence *fence;
+	struct dma_resv *resv = nvbo->bo.base.resv;
+	struct dma_resv_list *fobj;
 	struct nouveau_fence *f;
-	bool must_wait = true;
-	int ret = 0;
+	int ret = 0, i;
 
-	f = nouveau_local_fence(fence, chan->drm);
-	if (f) {
-		rcu_read_lock();
-		prev = rcu_dereference(f->channel);
-		if (prev && (prev == chan || fctx->sync(f, prev, chan) == 0))
-			must_wait = false;
-		rcu_read_unlock();
+	if (!exclusive) {
+		ret = dma_resv_reserve_shared(resv, 1);
+
+		if (ret)
+			return ret;
 	}
 
-	if (must_wait)
-		ret = dma_fence_wait(fence, intr);
+	fobj = dma_resv_get_list(resv);
+	fence = dma_resv_get_excl(resv);
 
-	return ret;
-}
+	if (fence && (!exclusive || !fobj || !fobj->shared_count)) {
+		struct nouveau_channel *prev = NULL;
+		bool must_wait = true;
 
-int
-nouveau_fence_sync(struct dma_fence *fence, struct nouveau_channel *chan,
-		   bool intr)
-{
-	int ret = 0;
-
-	if (dma_fence_is_array(fence)) {
-		struct dma_fence_array *array = to_dma_fence_array(fence);
-		unsigned int i;
-
-		for (i = 0; i < array->num_fences; i++) {
-			struct dma_fence *f = array->fences[i];
-
-			ret = __nouveau_fence_sync(f, chan, intr);
-			if (ret < 0)
-				break;
+		f = nouveau_local_fence(fence, chan->drm);
+		if (f) {
+			rcu_read_lock();
+			prev = rcu_dereference(f->channel);
+			if (prev && (prev == chan || fctx->sync(f, prev, chan) == 0))
+				must_wait = false;
+			rcu_read_unlock();
 		}
-	} else {
-		ret = __nouveau_fence_sync(fence, chan, intr);
+
+		if (must_wait)
+			ret = dma_fence_wait(fence, intr);
+
+		return ret;
+	}
+
+	if (!exclusive || !fobj)
+		return ret;
+
+	for (i = 0; i < fobj->shared_count && !ret; ++i) {
+		struct nouveau_channel *prev = NULL;
+		bool must_wait = true;
+
+		fence = rcu_dereference_protected(fobj->shared[i],
+						dma_resv_held(resv));
+
+		f = nouveau_local_fence(fence, chan->drm);
+		if (f) {
+			rcu_read_lock();
+			prev = rcu_dereference(f->channel);
+			if (prev && (prev == chan || fctx->sync(f, prev, chan) == 0))
+				must_wait = false;
+			rcu_read_unlock();
+		}
+
+		if (must_wait)
+			ret = dma_fence_wait(fence, intr);
 	}
 
 	return ret;
-}
-
-struct nouveau_fence *
-nouveau_fence_ref(struct nouveau_fence *fence)
-{
-	if (fence)
-		dma_fence_get(&fence->base);
-
-	return fence;
 }
 
 void

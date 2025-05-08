@@ -273,12 +273,12 @@ module_param_named(uvd, radeon_uvd, int, 0444);
 MODULE_PARM_DESC(vce, "vce enable/disable vce support (1 = enable, 0 = disable)");
 module_param_named(vce, radeon_vce, int, 0444);
 
-int radeon_si_support = 0;
-MODULE_PARM_DESC(si_support, "SI support (1 = enabled, 0 = disabled (default))");
+int radeon_si_support = 1;
+MODULE_PARM_DESC(si_support, "SI support (1 = enabled (default), 0 = disabled)");
 module_param_named(si_support, radeon_si_support, int, 0444);
 
-int radeon_cik_support = 0;
-MODULE_PARM_DESC(cik_support, "CIK support (1 = enabled, 0 = disabled (default))");
+int radeon_cik_support = 1;
+MODULE_PARM_DESC(cik_support, "CIK support (1 = enabled (default), 0 = disabled)");
 module_param_named(cik_support, radeon_cik_support, int, 0444);
 
 static struct pci_device_id pciidlist[] = {
@@ -342,14 +342,9 @@ static int radeon_pci_probe(struct pci_dev *pdev,
 	if (ret)
 		goto err_free;
 
-	dev->pdev = pdev;
-#ifdef __alpha__
-	dev->hose = pdev->sysdata;
-#endif
-
 	pci_set_drvdata(pdev, dev);
 
-	if (pci_find_capability(dev->pdev, PCI_CAP_ID_AGP))
+	if (pci_find_capability(pdev, PCI_CAP_ID_AGP))
 		dev->agp = drm_agp_init(dev);
 	if (dev->agp) {
 		dev->agp->agp_mtrr = arch_phys_wc_add(
@@ -391,13 +386,13 @@ radeon_pci_shutdown(struct pci_dev *pdev)
 	if (radeon_device_is_virtual())
 		radeon_pci_remove(pdev);
 
-#ifdef CONFIG_PPC64
+#if defined(CONFIG_PPC64) || defined(CONFIG_MACH_LOONGSON64)
 	/*
 	 * Some adapters need to be suspended before a
 	 * shutdown occurs in order to prevent an error
-	 * during kexec.
-	 * Make this power specific becauase it breaks
-	 * some non-power boards.
+	 * during kexec, shutdown or reboot.
+	 * Make this power and Loongson specific because
+	 * it breaks some other boards.
 	 */
 	radeon_suspend_kms(pci_get_drvdata(pdev), true, true, false);
 #endif

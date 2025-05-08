@@ -782,6 +782,7 @@ static int dw_mci_edmac_start_dma(struct dw_mci *host,
 	int ret = 0;
 
 	/* Set external dma config: burst size, burst width */
+	memset(&cfg, 0, sizeof(cfg));
 	cfg.dst_addr = host->phy_regs + fifo_offset;
 	cfg.src_addr = cfg.dst_addr;
 	cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
@@ -1952,9 +1953,9 @@ static bool dw_mci_clear_pending_data_complete(struct dw_mci *host)
 	return true;
 }
 
-static void dw_mci_tasklet_func(unsigned long priv)
+static void dw_mci_tasklet_func(struct tasklet_struct *t)
 {
-	struct dw_mci *host = (struct dw_mci *)priv;
+	struct dw_mci *host = from_tasklet(host, t, tasklet);
 	struct mmc_data	*data;
 	struct mmc_command *cmd;
 	struct mmc_request *mrq;
@@ -2018,8 +2019,8 @@ static void dw_mci_tasklet_func(unsigned long priv)
 					continue;
 				}
 
-				dw_mci_stop_dma(host);
 				send_stop_abort(host, data);
+				dw_mci_stop_dma(host);
 				state = STATE_SENDING_STOP;
 				break;
 			}
@@ -2043,10 +2044,10 @@ static void dw_mci_tasklet_func(unsigned long priv)
 			 */
 			if (test_and_clear_bit(EVENT_DATA_ERROR,
 					       &host->pending_events)) {
-				dw_mci_stop_dma(host);
 				if (!(host->data_status & (SDMMC_INT_DRTO |
 							   SDMMC_INT_EBE)))
 					send_stop_abort(host, data);
+				dw_mci_stop_dma(host);
 				state = STATE_DATA_ERROR;
 				break;
 			}
@@ -2079,10 +2080,10 @@ static void dw_mci_tasklet_func(unsigned long priv)
 			 */
 			if (test_and_clear_bit(EVENT_DATA_ERROR,
 					       &host->pending_events)) {
-				dw_mci_stop_dma(host);
 				if (!(host->data_status & (SDMMC_INT_DRTO |
 							   SDMMC_INT_EBE)))
 					send_stop_abort(host, data);
+				dw_mci_stop_dma(host);
 				state = STATE_DATA_ERROR;
 				break;
 			}
@@ -2606,8 +2607,6 @@ static void dw_mci_handle_cd(struct dw_mci *host)
 {
 	struct dw_mci_slot *slot = host->slot;
 
-	if (slot->mmc->ops->card_event)
-		slot->mmc->ops->card_event(slot->mmc);
 	mmc_detect_change(slot->mmc,
 		msecs_to_jiffies(host->pdata->detect_delay_ms));
 }
@@ -3095,10 +3094,8 @@ static struct dw_mci_board *dw_mci_parse_dt(struct dw_mci *host)
 
 	/* find reset controller when exist */
 	pdata->rstc = devm_reset_control_get_optional_exclusive(dev, "reset");
-	if (IS_ERR(pdata->rstc)) {
-		if (PTR_ERR(pdata->rstc) == -EPROBE_DEFER)
-			return ERR_PTR(-EPROBE_DEFER);
-	}
+	if (IS_ERR(pdata->rstc))
+		return ERR_CAST(pdata->rstc);
 
 	if (device_property_read_u32(dev, "fifo-depth", &pdata->fifo_depth))
 		dev_info(dev,
@@ -3204,7 +3201,7 @@ int dw_mci_probe(struct dw_mci *host)
 		goto err_clk_ciu;
 	}
 
-	if (!IS_ERR(host->pdata->rstc)) {
+	if (host->pdata->rstc) {
 		reset_control_assert(host->pdata->rstc);
 		usleep_range(10, 50);
 		reset_control_deassert(host->pdata->rstc);
@@ -3308,7 +3305,7 @@ int dw_mci_probe(struct dw_mci *host)
 	else
 		host->fifo_reg = host->regs + DATA_240A_OFFSET;
 
-	tasklet_init(&host->tasklet, dw_mci_tasklet_func, (unsigned long)host);
+	tasklet_setup(&host->tasklet, dw_mci_tasklet_func);
 	ret = devm_request_irq(host->dev, host->irq, dw_mci_interrupt,
 			       host->irq_flags, "dw-mci", host);
 	if (ret)
@@ -3344,8 +3341,7 @@ err_dmaunmap:
 	if (host->use_dma && host->dma_ops->exit)
 		host->dma_ops->exit(host);
 
-	if (!IS_ERR(host->pdata->rstc))
-		reset_control_assert(host->pdata->rstc);
+	reset_control_assert(host->pdata->rstc);
 
 err_clk_ciu:
 	clk_disable_unprepare(host->ciu_clk);
@@ -3373,8 +3369,7 @@ void dw_mci_remove(struct dw_mci *host)
 	if (host->use_dma && host->dma_ops->exit)
 		host->dma_ops->exit(host);
 
-	if (!IS_ERR(host->pdata->rstc))
-		reset_control_assert(host->pdata->rstc);
+	reset_control_assert(host->pdata->rstc);
 
 	clk_disable_unprepare(host->ciu_clk);
 	clk_disable_unprepare(host->biu_clk);

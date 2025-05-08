@@ -203,7 +203,7 @@ static const u8 *mipi_exec_send_packet(struct intel_dsi *intel_dsi,
 		break;
 	}
 
-	if (INTEL_GEN(dev_priv) < 11)
+	if (DISPLAY_VER(dev_priv) < 11)
 		vlv_dsi_wait_for_fifo_empty(intel_dsi, port);
 
 out:
@@ -380,13 +380,13 @@ static const u8 *mipi_exec_gpio(struct intel_dsi *intel_dsi, const u8 *data)
 	/* pull up/down */
 	value = *data++ & 1;
 
-	if (INTEL_GEN(dev_priv) >= 11)
+	if (DISPLAY_VER(dev_priv) >= 11)
 		icl_exec_gpio(dev_priv, gpio_source, gpio_index, value);
 	else if (IS_VALLEYVIEW(dev_priv))
 		vlv_exec_gpio(dev_priv, gpio_source, gpio_number, value);
 	else if (IS_CHERRYVIEW(dev_priv))
 		chv_exec_gpio(dev_priv, gpio_source, gpio_number, value);
-	else if (!IS_GEMINILAKE(dev_priv))
+	else
 		bxt_exec_gpio(dev_priv, gpio_source, gpio_index, value);
 
 	return data;
@@ -425,7 +425,7 @@ static void i2c_acpi_find_adapter(struct intel_dsi *intel_dsi,
 				  const u16 slave_addr)
 {
 	struct drm_device *drm_dev = intel_dsi->base.base.dev;
-	struct device *dev = &drm_dev->pdev->dev;
+	struct device *dev = drm_dev->dev;
 	struct acpi_device *acpi_dev;
 	struct list_head resource_list;
 	struct i2c_adapter_lookup lookup;
@@ -730,7 +730,6 @@ bool intel_dsi_vbt_init(struct intel_dsi *intel_dsi, u16 panel_id)
 	struct mipi_config *mipi_config = dev_priv->vbt.dsi.config;
 	struct mipi_pps_data *pps = dev_priv->vbt.dsi.pps;
 	struct drm_display_mode *mode = dev_priv->vbt.lfp_lvds_vbt_mode;
-	struct drm_display_mode *curr;
 	u16 burst_mode_ratio;
 	enum port port;
 
@@ -810,23 +809,6 @@ bool intel_dsi_vbt_init(struct intel_dsi *intel_dsi, u16 panel_id)
 		}
 	} else
 		burst_mode_ratio = 100;
-
-	/*
-	 * On BYT / CRC the GOP sometimes picks a slightly different pclk,
-	 * read back the GOP configured pclk and prefer it over ours.
-	 */
-	if (IS_VALLEYVIEW(dev_priv) || IS_CHERRYVIEW(dev_priv)) {
-		curr = intel_encoder_current_mode(&intel_dsi->base);
-		if (curr) {
-			DRM_DEBUG_KMS("Calculated pclk %d GOP %d\n",
-				      intel_dsi->pclk, curr->clock);
-			if (curr->clock >= (intel_dsi->pclk * 9 / 10) &&
-			    curr->clock <= (intel_dsi->pclk * 11 / 10))
-				intel_dsi->pclk = curr->clock;
-
-			kfree(curr);
-		}
-	}
 
 	intel_dsi->burst_mode_ratio = burst_mode_ratio;
 

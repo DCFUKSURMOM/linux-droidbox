@@ -432,7 +432,6 @@ asmlinkage void secondary_start_kernel(void)
 #endif
 	pr_debug("CPU%u: Booted secondary processor\n", cpu);
 
-	preempt_disable();
 	trace_hardirqs_off();
 
 	/*
@@ -540,12 +539,9 @@ void show_ipi_list(struct seq_file *p, int prec)
 	unsigned int cpu, i;
 
 	for (i = 0; i < NR_IPI; i++) {
-		unsigned int irq;
-
 		if (!ipi_desc[i])
 			continue;
 
-		irq = irq_desc_get_irq(ipi_desc[i]);
 		seq_printf(p, "%*s%u: ", prec - 1, "IPI", i);
 
 		for_each_online_cpu(cpu)

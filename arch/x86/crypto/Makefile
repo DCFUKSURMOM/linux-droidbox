@@ -2,10 +2,6 @@
 #
 # x86 crypto algorithms
 
-OBJECT_FILES_NON_STANDARD := y
-
-obj-$(CONFIG_CRYPTO_GLUE_HELPER_X86) += glue_helper.o
-
 obj-$(CONFIG_CRYPTO_TWOFISH_586) += twofish-i586.o
 twofish-i586-y := twofish-i586-asm_32.o twofish_glue.o
 obj-$(CONFIG_CRYPTO_TWOFISH_X86_64) += twofish-x86_64.o
@@ -92,11 +88,7 @@ nhpoly1305-avx2-y := nh-avx2-x86_64.o nhpoly1305-avx2-glue.o
 
 obj-$(CONFIG_CRYPTO_CURVE25519_X86) += curve25519-x86_64.o
 
-ifndef PERL_PATH
-  PERL_PATH = /usr/bin/perl
-endif
-
 quiet_cmd_perlasm = PERLASM $@
-      cmd_perlasm = $(PERL_PATH) $< > $@
+      cmd_perlasm = $(PERL) $< > $@
 $(obj)/%.S: $(src)/%.pl FORCE
 	$(call if_changed,perlasm)

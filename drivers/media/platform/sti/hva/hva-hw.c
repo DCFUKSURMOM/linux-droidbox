@@ -130,8 +130,7 @@ static irqreturn_t hva_hw_its_irq_thread(int irq, void *arg)
 	ctx_id = (hva->sts_reg & 0xFF00) >> 8;
 	if (ctx_id >= HVA_MAX_INSTANCES) {
 		dev_err(dev, "%s     %s: bad context identifier: %d\n",
-			ctx->name, __func__, ctx_id);
-		ctx->hw_err = true;
+			HVA_PREFIX, __func__, ctx_id);
 		goto out;
 	}
 
@@ -447,6 +446,7 @@ int hva_hw_runtime_resume(struct device *dev)
 	if (clk_set_rate(hva->clk, CLK_RATE)) {
 		dev_err(dev, "%s     failed to set clock frequency\n",
 			HVA_PREFIX);
+		clk_disable_unprepare(hva->clk);
 		return -EINVAL;
 	}
 

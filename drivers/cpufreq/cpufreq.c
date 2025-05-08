@@ -42,9 +42,6 @@ static LIST_HEAD(cpufreq_policy_list);
 #define for_each_inactive_policy(__policy)		\
 	for_each_suitable_policy(__policy, false)
 
-#define for_each_policy(__policy)			\
-	list_for_each_entry(__policy, &cpufreq_policy_list, policy_list)
-
 /* Iterate over governors */
 static LIST_HEAD(cpufreq_governor_list);
 #define for_each_governor(__governor)				\
@@ -1370,9 +1367,14 @@ static int cpufreq_online(unsigned int cpu)
 			goto out_free_policy;
 		}
 
+		/*
+		 * The initialization has succeeded and the policy is online.
+		 * If there is a problem with its frequency table, take it
+		 * offline and drop it.
+		 */
 		ret = cpufreq_table_validate_and_sort(policy);
 		if (ret)
-			goto out_exit_policy;
+			goto out_offline_policy;
 
 		/* related_cpus should at least include policy->cpus. */
 		cpumask_copy(policy->related_cpus, policy->cpus);
@@ -1517,6 +1519,10 @@ out_destroy_policy:
 		remove_cpu_dev_symlink(policy, get_cpu_device(j));
 
 	up_write(&policy->rwsem);
+
+out_offline_policy:
+	if (cpufreq_driver->offline)
+		cpufreq_driver->offline(policy);
 
 out_exit_policy:
 	if (cpufreq_driver->exit)
@@ -2101,7 +2107,7 @@ EXPORT_SYMBOL_GPL(cpufreq_driver_fast_switch);
  * cpufreq_driver_adjust_perf - Adjust CPU performance level in one go.
  * @cpu: Target CPU.
  * @min_perf: Minimum (required) performance level (units of @capacity).
- * @target_perf: Terget (desired) performance level (units of @capacity).
+ * @target_perf: Target (desired) performance level (units of @capacity).
  * @capacity: Capacity of the target CPU.
  *
  * Carry out a fast performance level switch of @cpu without sleeping.
@@ -2810,8 +2816,7 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 	if (ret)
 		goto err_boost_unreg;
 
-	if (!(cpufreq_driver->flags & CPUFREQ_STICKY) &&
-	    list_empty(&cpufreq_policy_list)) {
+	if (unlikely(list_empty(&cpufreq_policy_list))) {
 		/* if all ->init() calls failed, unregister */
 		ret = -ENODEV;
 		pr_debug("%s: No CPU initialized for driver %s\n", __func__,

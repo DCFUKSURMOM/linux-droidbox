@@ -672,6 +672,128 @@ cifs_add_pending_open(struct cifs_fid *fid, struct tcon_link *tlink,
 	spin_unlock(&tlink_tcon(open->tlink)->open_file_lock);
 }
 
+/*
+ * Critical section which runs after acquiring deferred_lock.
+ * As there is no reference count on cifs_deferred_close, pdclose
+ * should not be used outside deferred_lock.
+ */
+bool
+cifs_is_deferred_close(struct cifsFileInfo *cfile, struct cifs_deferred_close **pdclose)
+{
+	struct cifs_deferred_close *dclose;
+
+	list_for_each_entry(dclose, &CIFS_I(d_inode(cfile->dentry))->deferred_closes, dlist) {
+		if ((dclose->netfid == cfile->fid.netfid) &&
+			(dclose->persistent_fid == cfile->fid.persistent_fid) &&
+			(dclose->volatile_fid == cfile->fid.volatile_fid)) {
+			*pdclose = dclose;
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * Critical section which runs after acquiring deferred_lock.
+ */
+void
+cifs_add_deferred_close(struct cifsFileInfo *cfile, struct cifs_deferred_close *dclose)
+{
+	bool is_deferred = false;
+	struct cifs_deferred_close *pdclose;
+
+	is_deferred = cifs_is_deferred_close(cfile, &pdclose);
+	if (is_deferred) {
+		kfree(dclose);
+		return;
+	}
+
+	dclose->tlink = cfile->tlink;
+	dclose->netfid = cfile->fid.netfid;
+	dclose->persistent_fid = cfile->fid.persistent_fid;
+	dclose->volatile_fid = cfile->fid.volatile_fid;
+	list_add_tail(&dclose->dlist, &CIFS_I(d_inode(cfile->dentry))->deferred_closes);
+}
+
+/*
+ * Critical section which runs after acquiring deferred_lock.
+ */
+void
+cifs_del_deferred_close(struct cifsFileInfo *cfile)
+{
+	bool is_deferred = false;
+	struct cifs_deferred_close *dclose;
+
+	is_deferred = cifs_is_deferred_close(cfile, &dclose);
+	if (!is_deferred)
+		return;
+	list_del(&dclose->dlist);
+	kfree(dclose);
+}
+
+void
+cifs_close_deferred_file(struct cifsInodeInfo *cifs_inode)
+{
+	struct cifsFileInfo *cfile = NULL;
+	struct file_list *tmp_list, *tmp_next_list;
+	struct list_head file_head;
+
+	if (cifs_inode == NULL)
+		return;
+
+	INIT_LIST_HEAD(&file_head);
+	spin_lock(&cifs_inode->open_file_lock);
+	list_for_each_entry(cfile, &cifs_inode->openFileList, flist) {
+		if (delayed_work_pending(&cfile->deferred)) {
+			if (cancel_delayed_work(&cfile->deferred)) {
+				tmp_list = kmalloc(sizeof(struct file_list), GFP_ATOMIC);
+				if (tmp_list == NULL)
+					continue;
+				tmp_list->cfile = cfile;
+				list_add_tail(&tmp_list->list, &file_head);
+			}
+		}
+	}
+	spin_unlock(&cifs_inode->open_file_lock);
+
+	list_for_each_entry_safe(tmp_list, tmp_next_list, &file_head, list) {
+		_cifsFileInfo_put(tmp_list->cfile, true, false);
+		list_del(&tmp_list->list);
+		kfree(tmp_list);
+	}
+}
+
+void
+cifs_close_all_deferred_files(struct cifs_tcon *tcon)
+{
+	struct cifsFileInfo *cfile;
+	struct list_head *tmp;
+	struct file_list *tmp_list, *tmp_next_list;
+	struct list_head file_head;
+
+	INIT_LIST_HEAD(&file_head);
+	spin_lock(&tcon->open_file_lock);
+	list_for_each(tmp, &tcon->openFileList) {
+		cfile = list_entry(tmp, struct cifsFileInfo, tlist);
+		if (delayed_work_pending(&cfile->deferred)) {
+			if (cancel_delayed_work(&cfile->deferred)) {
+				tmp_list = kmalloc(sizeof(struct file_list), GFP_ATOMIC);
+				if (tmp_list == NULL)
+					continue;
+				tmp_list->cfile = cfile;
+				list_add_tail(&tmp_list->list, &file_head);
+			}
+		}
+	}
+	spin_unlock(&tcon->open_file_lock);
+
+	list_for_each_entry_safe(tmp_list, tmp_next_list, &file_head, list) {
+		_cifsFileInfo_put(tmp_list->cfile, true, false);
+		list_del(&tmp_list->list);
+		kfree(tmp_list);
+	}
+}
+
 /* parses DFS refferal V3 structure
  * caller is responsible for freeing target_nodes
  * returns:
@@ -1105,7 +1227,7 @@ int match_target_ip(struct TCP_Server_Info *server,
 
 	cifs_dbg(FYI, "%s: target name: %s\n", __func__, target + 2);
 
-	rc = dns_resolve_server_name_to_ip(target, &tip);
+	rc = dns_resolve_server_name_to_ip(target, &tip, NULL);
 	if (rc < 0)
 		goto out;
 
@@ -1180,7 +1302,7 @@ int update_super_prepath(struct cifs_tcon *tcon, char *prefix)
 	kfree(cifs_sb->prepath);
 
 	if (prefix && *prefix) {
-		cifs_sb->prepath = kstrndup(prefix, strlen(prefix), GFP_ATOMIC);
+		cifs_sb->prepath = kstrdup(prefix, GFP_ATOMIC);
 		if (!cifs_sb->prepath) {
 			rc = -ENOMEM;
 			goto out;

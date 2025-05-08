@@ -510,8 +510,7 @@ static ssize_t __cgroup1_procs_write(struct kernfs_open_file *of,
 	tcred = get_task_cred(task);
 	if (!uid_eq(cred->euid, GLOBAL_ROOT_UID) &&
 	    !uid_eq(cred->euid, tcred->uid) &&
-	    !uid_eq(cred->euid, tcred->suid) &&
-	    !ns_capable(tcred->user_ns, CAP_SYS_NICE))
+	    !uid_eq(cred->euid, tcred->suid))
 		ret = -EACCES;
 	put_cred(tcred);
 	if (ret)
@@ -728,7 +727,7 @@ int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry)
 			stats->nr_stopped++;
 			break;
 		default:
-			if (delayacct_is_task_waiting_on_io(tsk))
+			if (tsk->in_iowait)
 				stats->nr_io_wait++;
 			break;
 		}
@@ -821,6 +820,10 @@ static int cgroup1_rename(struct kernfs_node *kn, struct kernfs_node *new_parent
 	struct cgroup *cgrp = kn->priv;
 	int ret;
 
+	/* do not accept '\n' to prevent making /proc/<pid>/cgroup unparsable */
+	if (strchr(new_name_str, '\n'))
+		return -EINVAL;
+
 	if (kernfs_type(kn) != KERNFS_DIR)
 		return -ENOTDIR;
 	if (kn->parent != new_parent)
@@ -909,6 +912,8 @@ int cgroup1_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	opt = fs_parse(fc, cgroup1_fs_parameters, param, &result);
 	if (opt == -ENOPARAM) {
 		if (strcmp(param->key, "source") == 0) {
+			if (param->type != fs_value_is_string)
+				return invalf(fc, "Non-string source");
 			if (fc->source)
 				return invalf(fc, "Multiple sources not supported");
 			fc->source = param->string;
@@ -1002,7 +1007,7 @@ static int check_cgroupfs_options(struct fs_context *fc)
 	ctx->subsys_mask &= enabled;
 
 	/*
-	 * In absense of 'none', 'name=' or subsystem name options,
+	 * In absence of 'none', 'name=' and subsystem name options,
 	 * let's default to 'all'.
 	 */
 	if (!ctx->subsys_mask && !ctx->none && !ctx->name)
@@ -1220,9 +1225,7 @@ int cgroup1_get_tree(struct fs_context *fc)
 		ret = cgroup_do_get_tree(fc);
 
 	if (!ret && percpu_ref_is_dying(&ctx->root->cgrp.self.refcnt)) {
-		struct super_block *sb = fc->root->d_sb;
-		dput(fc->root);
-		deactivate_locked_super(sb);
+		fc_drop_locked(fc);
 		ret = 1;
 	}
 
