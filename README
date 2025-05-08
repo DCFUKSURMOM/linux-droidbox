@@ -13,11 +13,9 @@ https://github.com/maurossi/linux/tree/kernel-5.8_si_next (Linux 5.8)
 
 But it has since been updated.
 
-For a normal xbox kernel config without any Android settings use xbox_defconfig
+For a "normal" xbox kernel config without any Android stuff, use xbox_defconfig
 
-For a "normal" kernel config without any Android stuff, use xbox_defconfig
-
-For a kernel config with Android settings enabled, use droidbox_defconfig, its based on the xbox_defconfig and just has the extra settings enabled, it also enables the droidbox logo at boot
+For a xbox kernel config with Android settings enabled, use droidbox_defconfig, its based on the xbox_defconfig and just has the extra settings enabled, it also enables the droidbox logo at boot
 
 The normal androidx86 defconfigs are also available but these are standard pc configs and will not work on the Xbox.
 
