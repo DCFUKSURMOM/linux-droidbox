@@ -96,7 +96,7 @@ static int psample_nl_cmd_get_group_dumpit(struct sk_buff *msg,
 	return msg->len;
 }
 
-static const struct genl_ops psample_nl_ops[] = {
+static const struct genl_small_ops psample_nl_ops[] = {
 	{
 		.cmd = PSAMPLE_CMD_GET_GROUP,
 		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
@@ -112,8 +112,8 @@ static struct genl_family psample_nl_family __ro_after_init = {
 	.netnsok	= true,
 	.module		= THIS_MODULE,
 	.mcgrps		= psample_nl_mcgrps,
-	.ops		= psample_nl_ops,
-	.n_ops		= ARRAY_SIZE(psample_nl_ops),
+	.small_ops	= psample_nl_ops,
+	.n_small_ops	= ARRAY_SIZE(psample_nl_ops),
 	.n_mcgrps	= ARRAY_SIZE(psample_nl_mcgrps),
 };
 
@@ -309,10 +309,10 @@ static int psample_tunnel_meta_len(struct ip_tunnel_info *tun_info)
 	unsigned short tun_proto = ip_tunnel_info_af(tun_info);
 	const struct ip_tunnel_key *tun_key = &tun_info->key;
 	int tun_opts_len = tun_info->options_len;
-	int sum = 0;
+	int sum = nla_total_size(0);	/* PSAMPLE_ATTR_TUNNEL */
 
 	if (tun_key->tun_flags & TUNNEL_KEY)
-		sum += nla_total_size(sizeof(u64));
+		sum += nla_total_size_64bit(sizeof(u64));
 
 	if (tun_info->mode & IP_TUNNEL_INFO_BRIDGE)
 		sum += nla_total_size(0);

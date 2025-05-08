@@ -9,10 +9,12 @@
 #include <linux/types.h>
 #include <linux/mm_types.h>
 #include <linux/blkdev.h>
+#include <linux/android_kabi.h>
 
 struct address_space;
 struct fiemap_extent_info;
 struct inode;
+struct iomap_dio;
 struct iomap_writepage_ctx;
 struct iov_iter;
 struct kiocb;
@@ -140,6 +142,9 @@ struct iomap_ops {
 	 */
 	int (*iomap_end)(struct inode *inode, loff_t pos, loff_t length,
 			ssize_t written, unsigned flags, struct iomap *iomap);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /*
@@ -220,7 +225,7 @@ struct iomap_writeback_ops {
 	 * Optional, allows the file system to discard state on a page where
 	 * we failed to submit any I/O.
 	 */
-	void (*discard_page)(struct page *page);
+	void (*discard_page)(struct page *page, loff_t fileoff);
 };
 
 struct iomap_writepage_ctx {
@@ -258,6 +263,10 @@ struct iomap_dio_ops {
 ssize_t iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 		const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
 		bool wait_for_completion);
+struct iomap_dio *__iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
+		const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
+		bool wait_for_completion);
+ssize_t iomap_dio_complete(struct iomap_dio *dio);
 int iomap_dio_iopoll(struct kiocb *kiocb, bool spin);
 
 #ifdef CONFIG_SWAP

@@ -551,27 +551,11 @@ struct mlxsw_sx_port_link_mode {
 
 static const struct mlxsw_sx_port_link_mode mlxsw_sx_port_link_mode[] = {
 	{
-		.mask		= MLXSW_REG_PTYS_ETH_SPEED_100BASE_T,
-		.supported	= SUPPORTED_100baseT_Full,
-		.advertised	= ADVERTISED_100baseT_Full,
-		.speed		= 100,
-	},
-	{
-		.mask		= MLXSW_REG_PTYS_ETH_SPEED_100BASE_TX,
-		.speed		= 100,
-	},
-	{
 		.mask		= MLXSW_REG_PTYS_ETH_SPEED_SGMII |
 				  MLXSW_REG_PTYS_ETH_SPEED_1000BASE_KX,
 		.supported	= SUPPORTED_1000baseKX_Full,
 		.advertised	= ADVERTISED_1000baseKX_Full,
 		.speed		= 1000,
-	},
-	{
-		.mask		= MLXSW_REG_PTYS_ETH_SPEED_10GBASE_T,
-		.supported	= SUPPORTED_10000baseT_Full,
-		.advertised	= ADVERTISED_10000baseT_Full,
-		.speed		= 10000,
 	},
 	{
 		.mask		= MLXSW_REG_PTYS_ETH_SPEED_10GBASE_CX4 |
@@ -588,12 +572,6 @@ static const struct mlxsw_sx_port_link_mode mlxsw_sx_port_link_mode[] = {
 		.supported	= SUPPORTED_10000baseKR_Full,
 		.advertised	= ADVERTISED_10000baseKR_Full,
 		.speed		= 10000,
-	},
-	{
-		.mask		= MLXSW_REG_PTYS_ETH_SPEED_20GBASE_KR2,
-		.supported	= SUPPORTED_20000baseKR2_Full,
-		.advertised	= ADVERTISED_20000baseKR2_Full,
-		.speed		= 20000,
 	},
 	{
 		.mask		= MLXSW_REG_PTYS_ETH_SPEED_40GBASE_CR4,

@@ -160,6 +160,10 @@ perf_evlist__find_tracepoint_by_name(struct evlist *evlist,
 int evlist__add_pollfd(struct evlist *evlist, int fd);
 int evlist__filter_pollfd(struct evlist *evlist, short revents_and_mask);
 
+#ifdef HAVE_EVENTFD_SUPPORT
+int evlist__add_wakeup_eventfd(struct evlist *evlist, int fd);
+#endif
+
 int evlist__poll(struct evlist *evlist, int timeout);
 
 struct evsel *perf_evlist__id2evsel(struct evlist *evlist, u64 id);
@@ -363,6 +367,7 @@ struct evsel *perf_evlist__reset_weak_group(struct evlist *evlist,
 #define EVLIST_CTL_CMD_ENABLE_TAG  "enable"
 #define EVLIST_CTL_CMD_DISABLE_TAG "disable"
 #define EVLIST_CTL_CMD_ACK_TAG     "ack\n"
+#define EVLIST_CTL_CMD_SNAPSHOT_TAG "snapshot"
 
 #define EVLIST_CTL_CMD_MAX_LEN 64
 
@@ -370,15 +375,20 @@ enum evlist_ctl_cmd {
 	EVLIST_CTL_CMD_UNSUPPORTED = 0,
 	EVLIST_CTL_CMD_ENABLE,
 	EVLIST_CTL_CMD_DISABLE,
-	EVLIST_CTL_CMD_ACK
+	EVLIST_CTL_CMD_ACK,
+	EVLIST_CTL_CMD_SNAPSHOT,
 };
 
+int evlist__parse_control(const char *str, int *ctl_fd, int *ctl_fd_ack, bool *ctl_fd_close);
+void evlist__close_control(int ctl_fd, int ctl_fd_ack, bool *ctl_fd_close);
 int evlist__initialize_ctlfd(struct evlist *evlist, int ctl_fd, int ctl_fd_ack);
 int evlist__finalize_ctlfd(struct evlist *evlist);
 bool evlist__ctlfd_initialized(struct evlist *evlist);
 int evlist__ctlfd_process(struct evlist *evlist, enum evlist_ctl_cmd *cmd);
+int evlist__ctlfd_ack(struct evlist *evlist);
 
 #define EVLIST_ENABLED_MSG "Events enabled\n"
 #define EVLIST_DISABLED_MSG "Events disabled\n"
 
+struct evsel *evlist__find_evsel(struct evlist *evlist, int idx);
 #endif /* __PERF_EVLIST_H */

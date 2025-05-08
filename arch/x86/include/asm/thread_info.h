@@ -102,7 +102,6 @@ struct thread_info {
 #define TIF_SYSCALL_TRACEPOINT	28	/* syscall tracepoint instrumentation */
 #define TIF_ADDR32		29	/* 32-bit address space on 64 bits */
 #define TIF_X32			30	/* 32-bit native x86-64 binary */
-#define TIF_FSCHECK		31	/* Check FS is USER_DS on return */
 
 #define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
 #define _TIF_NOTIFY_RESUME	(1 << TIF_NOTIFY_RESUME)
@@ -131,7 +130,6 @@ struct thread_info {
 #define _TIF_SYSCALL_TRACEPOINT	(1 << TIF_SYSCALL_TRACEPOINT)
 #define _TIF_ADDR32		(1 << TIF_ADDR32)
 #define _TIF_X32		(1 << TIF_X32)
-#define _TIF_FSCHECK		(1 << TIF_FSCHECK)
 
 /* flags to check in __switch_to() */
 #define _TIF_WORK_CTXSW_BASE					\
@@ -218,10 +216,31 @@ static inline int arch_within_stack_frames(const void * const stack,
 
 #endif
 
+/*
+ * Thread-synchronous status.
+ *
+ * This is different from the flags in that nobody else
+ * ever touches our thread-synchronous status, so we don't
+ * have to worry about atomic accesses.
+ */
+#define TS_COMPAT		0x0002	/* 32bit syscall active (64BIT)*/
+
+#ifndef __ASSEMBLY__
 #ifdef CONFIG_COMPAT
 #define TS_I386_REGS_POKED	0x0004	/* regs poked by 32-bit ptracer */
+#define TS_COMPAT_RESTART	0x0008
+
+#define arch_set_restart_data	arch_set_restart_data
+
+static inline void arch_set_restart_data(struct restart_block *restart)
+{
+	struct thread_info *ti = current_thread_info();
+	if (ti->status & TS_COMPAT)
+		ti->status |= TS_COMPAT_RESTART;
+	else
+		ti->status &= ~TS_COMPAT_RESTART;
+}
 #endif
-#ifndef __ASSEMBLY__
 
 #ifdef CONFIG_X86_32
 #define in_ia32_syscall() true

@@ -7,6 +7,7 @@
 #include <drm/i915_drm.h>
 
 #include "i915_drv.h"
+#include "intel_breadcrumbs.h"
 #include "intel_gt.h"
 #include "intel_gt_clock_utils.h"
 #include "intel_gt_irq.h"
@@ -654,8 +655,11 @@ static void rps_set_power(struct intel_rps *rps, int new_power)
 	/* When byt can survive without system hang with dynamic
 	 * sw freq adjustments, this restriction can be lifted.
 	 */
-	if (IS_VALLEYVIEW(gt->i915))
+	if (IS_VALLEYVIEW(gt->i915)) {
+		threshold_up = VLV_RP_UP_EI_THRESHOLD;
+		threshold_down = VLV_RP_DOWN_EI_THRESHOLD;
 		goto skip_hw_write;
+	}
 
 	GT_TRACE(gt,
 		 "changing power mode [%d], up %d%% @ %dus, down %d%% @ %dus\n",
@@ -882,6 +886,10 @@ void intel_rps_park(struct intel_rps *rps)
 		adj = -2;
 	rps->last_adj = adj;
 	rps->cur_freq = max_t(int, rps->cur_freq + adj, rps->min_freq);
+	if (rps->cur_freq < rps->efficient_freq) {
+		rps->cur_freq = rps->efficient_freq;
+		rps->last_adj = 0;
+	}
 
 	GT_TRACE(rps_to_gt(rps), "park:%x\n", rps->cur_freq);
 }

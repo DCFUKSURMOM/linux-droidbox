@@ -1271,6 +1271,8 @@ route_lookup:
 	if (max_headroom > dev->needed_headroom)
 		dev->needed_headroom = max_headroom;
 
+	skb_set_inner_ipproto(skb, proto);
+
 	err = ip6_tnl_encap(skb, t, &proto, fl6);
 	if (err)
 		return err;
@@ -1279,8 +1281,6 @@ route_lookup:
 		init_tel_txopt(&opt, encap_limit);
 		ipv6_push_frag_opts(skb, &opt.ops, &proto);
 	}
-
-	skb_set_inner_ipproto(skb, proto);
 
 	skb_push(skb, sizeof(struct ipv6hdr));
 	skb_reset_network_header(skb);
@@ -1363,8 +1363,8 @@ ipxip6_tnl_xmit(struct sk_buff *skb, struct net_device *dev,
 
 				tel = (void *)&skb_network_header(skb)[offset];
 				if (tel->encap_limit == 0) {
-					icmpv6_send(skb, ICMPV6_PARAMPROB,
-						ICMPV6_HDR_FIELD, offset + 2);
+					icmpv6_ndo_send(skb, ICMPV6_PARAMPROB,
+							ICMPV6_HDR_FIELD, offset + 2);
 					return -1;
 				}
 				encap_limit = tel->encap_limit - 1;
@@ -1416,11 +1416,11 @@ ipxip6_tnl_xmit(struct sk_buff *skb, struct net_device *dev,
 		if (err == -EMSGSIZE)
 			switch (protocol) {
 			case IPPROTO_IPIP:
-				icmp_send(skb, ICMP_DEST_UNREACH,
-					  ICMP_FRAG_NEEDED, htonl(mtu));
+				icmp_ndo_send(skb, ICMP_DEST_UNREACH,
+					      ICMP_FRAG_NEEDED, htonl(mtu));
 				break;
 			case IPPROTO_IPV6:
-				icmpv6_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu);
+				icmpv6_ndo_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu);
 				break;
 			default:
 				break;

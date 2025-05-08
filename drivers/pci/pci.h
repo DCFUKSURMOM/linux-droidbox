@@ -3,6 +3,7 @@
 #define DRIVERS_PCI_H
 
 #include <linux/pci.h>
+#include <linux/android_kabi.h>
 
 /* Number of possible devfns: 0.0 to 1f.7 inclusive */
 #define MAX_NR_DEVFNS 256
@@ -43,10 +44,9 @@ int pci_probe_reset_function(struct pci_dev *dev);
 int pci_bridge_secondary_bus_reset(struct pci_dev *dev);
 int pci_bus_error_reset(struct pci_dev *dev);
 
-#define PCI_PM_D2_DELAY         200
-#define PCI_PM_D3_WAIT          10
-#define PCI_PM_D3COLD_WAIT      100
-#define PCI_PM_BUS_WAIT         50
+#define PCI_PM_D2_DELAY         200	/* usec; see PCIe r4.0, sec 5.9.1 */
+#define PCI_PM_D3HOT_WAIT       10	/* msec */
+#define PCI_PM_D3COLD_WAIT      100	/* msec */
 
 /**
  * struct pci_platform_pm_ops - Firmware PM callbacks
@@ -178,7 +178,7 @@ extern struct mutex pci_slot_mutex;
 
 extern raw_spinlock_t pci_lock;
 
-extern unsigned int pci_pm_d3_delay;
+extern unsigned int pci_pm_d3hot_delay;
 
 #ifdef CONFIG_PCI_MSI
 void pci_no_msi(void);
@@ -344,6 +344,11 @@ struct pci_sriov {
 	u16		subsystem_device; /* VF subsystem device */
 	resource_size_t	barsz[PCI_SRIOV_NUM_BARS];	/* VF BAR size */
 	bool		drivers_autoprobe; /* Auto probing of VFs by driver */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 /**

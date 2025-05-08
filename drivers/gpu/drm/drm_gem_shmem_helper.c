@@ -126,8 +126,8 @@ void drm_gem_shmem_free_object(struct drm_gem_object *obj)
 		drm_prime_gem_destroy(obj, shmem->sgt);
 	} else {
 		if (shmem->sgt) {
-			dma_unmap_sg(obj->dev->dev, shmem->sgt->sgl,
-				     shmem->sgt->nents, DMA_BIDIRECTIONAL);
+			dma_unmap_sgtable(obj->dev->dev, shmem->sgt,
+					  DMA_BIDIRECTIONAL, 0);
 			sg_free_table(shmem->sgt);
 			kfree(shmem->sgt);
 		}
@@ -340,13 +340,14 @@ static void drm_gem_shmem_vunmap_locked(struct drm_gem_shmem_object *shmem)
 	if (--shmem->vmap_use_count > 0)
 		return;
 
-	if (obj->import_attach)
+	if (obj->import_attach) {
 		dma_buf_vunmap(obj->import_attach->dmabuf, shmem->vaddr);
-	else
+	} else {
 		vunmap(shmem->vaddr);
+		drm_gem_shmem_put_pages(shmem);
+	}
 
 	shmem->vaddr = NULL;
-	drm_gem_shmem_put_pages(shmem);
 }
 
 /*
@@ -424,8 +425,7 @@ void drm_gem_shmem_purge_locked(struct drm_gem_object *obj)
 
 	WARN_ON(!drm_gem_shmem_is_purgeable(shmem));
 
-	dma_unmap_sg(obj->dev->dev, shmem->sgt->sgl,
-		     shmem->sgt->nents, DMA_BIDIRECTIONAL);
+	dma_unmap_sgtable(obj->dev->dev, shmem->sgt, DMA_BIDIRECTIONAL, 0);
 	sg_free_table(shmem->sgt);
 	kfree(shmem->sgt);
 	shmem->sgt = NULL;
@@ -535,14 +535,28 @@ static vm_fault_t drm_gem_shmem_fault(struct vm_fault *vmf)
 	struct drm_gem_object *obj = vma->vm_private_data;
 	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
 	loff_t num_pages = obj->size >> PAGE_SHIFT;
+	vm_fault_t ret;
 	struct page *page;
+	pgoff_t page_offset;
 
-	if (vmf->pgoff >= num_pages || WARN_ON_ONCE(!shmem->pages))
-		return VM_FAULT_SIGBUS;
+	/* We don't use vmf->pgoff since that has the fake offset */
+	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
-	page = shmem->pages[vmf->pgoff];
+	mutex_lock(&shmem->pages_lock);
 
-	return vmf_insert_page(vma, vmf->address, page);
+	if (page_offset >= num_pages ||
+	    WARN_ON_ONCE(!shmem->pages) ||
+	    shmem->madv < 0) {
+		ret = VM_FAULT_SIGBUS;
+	} else {
+		page = shmem->pages[page_offset];
+
+		ret = vmf_insert_page(vma, vmf->address, page);
+	}
+
+	mutex_unlock(&shmem->pages_lock);
+
+	return ret;
 }
 
 static void drm_gem_shmem_vm_open(struct vm_area_struct *vma)
@@ -591,11 +605,13 @@ int drm_gem_shmem_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
 	struct drm_gem_shmem_object *shmem;
 	int ret;
 
-	/* Remove the fake offset */
-	vma->vm_pgoff -= drm_vma_node_start(&obj->vma_node);
+	if (obj->import_attach) {
+		/* Drop the reference drm_gem_mmap_obj() acquired.*/
+		drm_gem_object_put(obj);
+		vma->vm_private_data = NULL;
 
-	if (obj->import_attach)
 		return dma_buf_mmap(obj->dma_buf, vma, 0);
+	}
 
 	shmem = to_drm_gem_shmem_obj(obj);
 
@@ -656,7 +672,7 @@ struct sg_table *drm_gem_shmem_get_sg_table(struct drm_gem_object *obj)
 
 	WARN_ON(shmem->base.import_attach);
 
-	return drm_prime_pages_to_sg(shmem->pages, obj->size >> PAGE_SHIFT);
+	return drm_prime_pages_to_sg(obj->dev, shmem->pages, obj->size >> PAGE_SHIFT);
 }
 EXPORT_SYMBOL_GPL(drm_gem_shmem_get_sg_table);
 
@@ -697,12 +713,17 @@ struct sg_table *drm_gem_shmem_get_pages_sgt(struct drm_gem_object *obj)
 		goto err_put_pages;
 	}
 	/* Map the pages for use by the h/w. */
-	dma_map_sg(obj->dev->dev, sgt->sgl, sgt->nents, DMA_BIDIRECTIONAL);
+	ret = dma_map_sgtable(obj->dev->dev, sgt, DMA_BIDIRECTIONAL, 0);
+	if (ret)
+		goto err_free_sgt;
 
 	shmem->sgt = sgt;
 
 	return sgt;
 
+err_free_sgt:
+	sg_free_table(sgt);
+	kfree(sgt);
 err_put_pages:
 	drm_gem_shmem_put_pages(shmem);
 	return ERR_PTR(ret);

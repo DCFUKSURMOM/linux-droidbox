@@ -529,7 +529,6 @@ static void dce60_program_size(
 	enum dc_rotation_angle rotation, /* not used in DCE6 */
 	const struct plane_size *plane_size)
 {
-	const struct rect *in_rect = &plane_size->surface_size;
 	struct rect hw_rect = plane_size->surface_size;
 	/* DCE6 has no HW rotation, skip rotation_angles declaration */
 

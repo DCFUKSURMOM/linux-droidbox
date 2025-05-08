@@ -331,7 +331,7 @@ asymmetric CPU topologies for now. This requirement is checked at run-time by
 looking for the presence of the SD_ASYM_CPUCAPACITY flag when the scheduling
 domains are built.
 
-See Documentation/sched/sched-capacity.rst for requirements to be met for this
+See Documentation/scheduler/sched-capacity.rst for requirements to be met for this
 flag to be set in the sched_domain hierarchy.
 
 Please note that EAS is not fundamentally incompatible with SMP, but no
@@ -397,7 +397,7 @@ Consequently, the only sane governor to use together with EAS is schedutil,
 because it is the only one providing some degree of consistency between
 frequency requests and energy predictions.
 
-Using EAS with any other governor than schedutil is not supported.
+Using EAS with any other governor than schedutil is not recommended.
 
 
 6.5 Scale-invariant utilization signals

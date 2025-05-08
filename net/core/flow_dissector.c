@@ -175,7 +175,7 @@ void skb_flow_get_icmp_tci(const struct sk_buff *skb,
 	 * avoid confusion with packets without such field
 	 */
 	if (icmp_has_id(ih->type))
-		key_icmp->id = ih->un.echo.id ? : 1;
+		key_icmp->id = ih->un.echo.id ? ntohs(ih->un.echo.id) : 1;
 	else
 		key_icmp->id = 0;
 }
@@ -932,8 +932,14 @@ bool __skb_flow_dissect(const struct net *net,
 			int offset = 0;
 
 			ops = skb->dev->dsa_ptr->tag_ops;
-			if (ops->flow_dissect &&
-			    !ops->flow_dissect(skb, &proto, &offset)) {
+			/* Tail taggers don't break flow dissection */
+			if (!ops->tail_tag) {
+				if (ops->flow_dissect)
+					ops->flow_dissect(skb, &proto, &offset);
+				else
+					dsa_tag_generic_flow_dissect(skb,
+								     &proto,
+								     &offset);
 				hlen -= offset;
 				nhoff += offset;
 			}
@@ -1044,6 +1050,9 @@ proto_again:
 			key_control->addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
 		}
 
+		__skb_flow_dissect_ipv4(skb, flow_dissector,
+					target_container, data, iph);
+
 		if (ip_is_fragment(iph)) {
 			key_control->flags |= FLOW_DIS_IS_FRAGMENT;
 
@@ -1059,9 +1068,6 @@ proto_again:
 				}
 			}
 		}
-
-		__skb_flow_dissect_ipv4(skb, flow_dissector,
-					target_container, data, iph);
 
 		break;
 	}

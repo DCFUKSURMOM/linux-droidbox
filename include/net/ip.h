@@ -151,7 +151,7 @@ int igmp_mc_init(void);
 
 int ip_build_and_send_pkt(struct sk_buff *skb, const struct sock *sk,
 			  __be32 saddr, __be32 daddr,
-			  struct ip_options_rcu *opt);
+			  struct ip_options_rcu *opt, u8 tos);
 int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt,
 	   struct net_device *orig_dev);
 void ip_list_rcv(struct list_head *head, struct packet_type *pt,
@@ -343,6 +343,13 @@ static inline bool inet_is_local_reserved_port(struct net *net, unsigned short p
 	return test_bit(port, net->ipv4.sysctl_local_reserved_ports);
 }
 
+static inline bool inet_is_local_unbindable_port(struct net *net, unsigned short port)
+{
+	if (!net->ipv4.sysctl_local_unbindable_ports)
+		return false;
+	return test_bit(port, net->ipv4.sysctl_local_unbindable_ports);
+}
+
 static inline bool sysctl_dev_name_is_allowed(const char *name)
 {
 	return strcmp(name, "default") != 0  && strcmp(name, "all") != 0;
@@ -355,6 +362,11 @@ static inline bool inet_port_requires_bind_service(struct net *net, unsigned sho
 
 #else
 static inline bool inet_is_local_reserved_port(struct net *net, unsigned short port)
+{
+	return false;
+}
+
+static inline bool inet_is_local_unbindable_port(struct net *net, unsigned short port)
 {
 	return false;
 }

@@ -8,6 +8,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
@@ -17,7 +18,6 @@
 #include <linux/delay.h>
 #include <linux/bitops.h>
 #include <linux/gpio/consumer.h>
-#include <linux/acpi.h>
 #include <linux/regulator/consumer.h>
 #include <linux/pm_runtime.h>
 
@@ -779,7 +779,6 @@ static const struct iio_info ak8975_info = {
 	.read_raw = &ak8975_read_raw,
 };
 
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id ak_acpi_match[] = {
 	{"AK8975", AK8975},
 	{"AK8963", AK8963},
@@ -791,7 +790,6 @@ static const struct acpi_device_id ak_acpi_match[] = {
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, ak_acpi_match);
-#endif
 
 static void ak8975_fill_buffer(struct iio_dev *indio_dev)
 {
@@ -1064,6 +1062,36 @@ static const struct i2c_device_id ak8975_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, ak8975_id);
 
+#if defined(CONFIG_ACPI)
+static int ak8975_detect(struct i2c_client *temp_client,
+			 struct i2c_board_info *info)
+{
+	struct i2c_adapter *adapter;
+	int i, j;
+	int ret;
+
+	/* autodetect only when we are behind a mux */
+	adapter = i2c_parent_is_i2c_adapter(temp_client->adapter);
+	if (!adapter)
+		return -ENODEV;
+
+	for (i = 0; i < ARRAY_SIZE(ak_def_array); ++i) {
+		ret = ak8975_who_i_am(temp_client, ak_def_array[i].type);
+		if (ret >= 0) {
+			for (j = 0; j < ARRAY_SIZE(ak8975_id) - 1; ++j) {
+				if (ak_def_array[i].type == (int)ak8975_id[j].driver_data) {
+					strlcpy(info->type, ak8975_id[j].name,
+						I2C_NAME_SIZE);
+					return 0;
+				}
+			}
+		}
+	}
+
+	return -ENODEV;
+}
+#endif
+
 static const struct of_device_id ak8975_of_match[] = {
 	{ .compatible = "asahi-kasei,ak8975", },
 	{ .compatible = "ak8975", },
@@ -1081,12 +1109,17 @@ static struct i2c_driver ak8975_driver = {
 	.driver = {
 		.name	= "ak8975",
 		.pm = &ak8975_dev_pm_ops,
-		.of_match_table = of_match_ptr(ak8975_of_match),
-		.acpi_match_table = ACPI_PTR(ak_acpi_match),
+		.of_match_table = ak8975_of_match,
+		.acpi_match_table = ak_acpi_match,
 	},
 	.probe		= ak8975_probe,
 	.remove		= ak8975_remove,
 	.id_table	= ak8975_id,
+#if defined(CONFIG_ACPI)
+	.class		= I2C_CLASS_HWMON,
+	.address_list	= I2C_ADDRS(0x0C, 0x0D, 0x0E, 0x0F),
+	.detect		= ak8975_detect,
+#endif
 };
 module_i2c_driver(ak8975_driver);
 

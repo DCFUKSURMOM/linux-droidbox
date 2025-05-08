@@ -615,7 +615,7 @@ nv_crtc_swap_fbs(struct drm_crtc *crtc, struct drm_framebuffer *old_fb)
 	struct nouveau_crtc *nv_crtc = nouveau_crtc(crtc);
 	int ret;
 
-	ret = nouveau_bo_pin(nvbo, TTM_PL_FLAG_VRAM, false);
+	ret = nouveau_bo_pin(nvbo, NOUVEAU_GEM_DOMAIN_VRAM, false);
 	if (ret == 0) {
 		if (disp->image[nv_crtc->index])
 			nouveau_bo_unpin(disp->image[nv_crtc->index]);
@@ -1117,7 +1117,7 @@ nv04_page_flip_emit(struct nouveau_channel *chan,
 	spin_unlock_irqrestore(&dev->event_lock, flags);
 
 	/* Synchronize with the old framebuffer */
-	ret = nouveau_bo_sync(old_bo, chan, false, false);
+	ret = nouveau_fence_sync(old_bo, chan, false, false);
 	if (ret)
 		goto fail;
 
@@ -1172,7 +1172,7 @@ nv04_crtc_page_flip(struct drm_crtc *crtc, struct drm_framebuffer *fb,
 		return -ENOMEM;
 
 	if (new_bo != old_bo) {
-		ret = nouveau_bo_pin(new_bo, TTM_PL_FLAG_VRAM, true);
+		ret = nouveau_bo_pin(new_bo, NOUVEAU_GEM_DOMAIN_VRAM, true);
 		if (ret)
 			goto fail_free;
 	}
@@ -1183,7 +1183,7 @@ nv04_crtc_page_flip(struct drm_crtc *crtc, struct drm_framebuffer *fb,
 		goto fail_unpin;
 
 	/* synchronise rendering channel with the kernel's channel */
-	ret = nouveau_bo_sync(new_bo, chan, false, true);
+	ret = nouveau_fence_sync(new_bo, chan, false, true);
 	if (ret) {
 		ttm_bo_unreserve(&new_bo->bo);
 		goto fail_unpin;
@@ -1336,10 +1336,11 @@ nv04_crtc_create(struct drm_device *dev, int crtc_num)
 	drm_mode_crtc_set_gamma_size(&nv_crtc->base, 256);
 
 	ret = nouveau_bo_new(&nouveau_drm(dev)->client, 64*64*4, 0x100,
-			     TTM_PL_FLAG_VRAM, 0, 0x0000, NULL, NULL,
+			     NOUVEAU_GEM_DOMAIN_VRAM, 0, 0x0000, NULL, NULL,
 			     &nv_crtc->cursor.nvbo);
 	if (!ret) {
-		ret = nouveau_bo_pin(nv_crtc->cursor.nvbo, TTM_PL_FLAG_VRAM, false);
+		ret = nouveau_bo_pin(nv_crtc->cursor.nvbo,
+				     NOUVEAU_GEM_DOMAIN_VRAM, false);
 		if (!ret) {
 			ret = nouveau_bo_map(nv_crtc->cursor.nvbo);
 			if (ret)

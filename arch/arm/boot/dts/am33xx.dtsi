@@ -40,6 +40,9 @@
 		ethernet1 = &cpsw_emac1;
 		spi0 = &spi0;
 		spi1 = &spi1;
+		mmc0 = &mmc1;
+		mmc1 = &mmc2;
+		mmc2 = &mmc3;
 	};
 
 	cpus {
@@ -172,7 +175,7 @@
 	 * for the moment, just use a fake OCP bus entry to represent
 	 * the whole bus hierarchy.
 	 */
-	ocp {
+	ocp: ocp {
 		compatible = "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -578,6 +581,7 @@
 					<SYSC_IDLE_SMART>;
 			clocks = <&gfx_l3_clkctrl AM3_GFX_L3_GFX_CLKCTRL 0>;
 			clock-names = "fck";
+			power-domains = <&prm_gfx>;
 			resets = <&prm_gfx 0>;
 			reset-names = "rstctrl";
 			#address-cells = <1>;
@@ -617,6 +621,7 @@
 	prm_gfx: prm@1100 {
 		compatible = "ti,am3-prm-inst", "ti,omap-prm-inst";
 		reg = <0x1100 0x100>;
+		#power-domain-cells = <0>;
 		#reset-cells = <1>;
 	};
 };

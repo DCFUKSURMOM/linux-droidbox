@@ -318,7 +318,7 @@ static inline void prepare_inbound_urb(struct snd_usb_endpoint *ep,
 
 /*
  * Send output urbs that have been prepared previously. URBs are dequeued
- * from ep->ready_playback_urbs and in case there there aren't any available
+ * from ep->ready_playback_urbs and in case there aren't any available
  * or there are no packets that have been prepared, this function does
  * nothing.
  *
@@ -575,9 +575,6 @@ void snd_usb_endpoint_sync_pending_stop(struct snd_usb_endpoint *ep)
 static int deactivate_urbs(struct snd_usb_endpoint *ep, bool force)
 {
 	unsigned int i;
-
-	if (!force && atomic_read(&ep->chip->shutdown)) /* to be sure... */
-		return -EBADFD;
 
 	clear_bit(EP_FLAG_RUNNING, &ep->flags);
 

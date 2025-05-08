@@ -454,12 +454,6 @@ config DELL_WMI_LED
 	  This adds support for the Latitude 2100 and similar
 	  notebooks that have an external LED.
 
-config DV11P_TABLET
-	tristate "Dell Venue 11 Pro Tablet support"
-	depends on ACPI
-	help
-	  This driver provides power button support and docking events for the Dell Venue 11 Pro tablet.
-
 config AMILO_RFKILL
 	tristate "Fujitsu-Siemens Amilo rfkill support"
 	depends on RFKILL
@@ -754,16 +748,6 @@ config THINKPAD_ACPI_HOTKEY_POLL
 
 	  If you are not sure, say Y here.  The driver enables polling only if
 	  it is strictly necessary to do so.
-	  
-config S103T_WMI
-	tristate "Lenovo S10-3T Rotate Button Support"
-	depends on ACPI_WMI
-	depends on INPUT
-	help
-	  This is a driver for the Lenovo ideapad S10-3T rotate button.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called lsrot.
 
 config INTEL_ATOMISP2_LED
 	tristate "Intel AtomISP2 camera LED driver"
@@ -1186,6 +1170,16 @@ config SYSTEM76_ACPI
 
 	  If you have a System76 laptop running open firmware, say Y or M here.
 
+config S103T_WMI
+	tristate "Lenovo S10-3T Rotate Button Support"
+	depends on ACPI_WMI
+	depends on INPUT
+	help
+	  This is a driver for the Lenovo ideapad S10-3T rotate button.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called lsrot.
+
 config TOPSTAR_LAPTOP
 	tristate "Topstar Laptop Extras"
 	depends on ACPI
@@ -1377,6 +1371,12 @@ config INTEL_PMC_CORE
 		- PCH IP Power Gating status
 		- LTR Ignore
 		- MPHY/PLL gating status (Sunrisepoint PCH only)
+
+config DV11P_TABLET
+	tristate "Dell Venue 11 Pro Tablet support"
+	depends on ACPI
+	help
+	  This driver provides power button support and docking events for the Dell Venue 11 Pro tablet.
 
 config INTEL_PUNIT_IPC
 	tristate "Intel P-Unit IPC Driver"

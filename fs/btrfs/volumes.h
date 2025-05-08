@@ -50,6 +50,7 @@ struct btrfs_io_geometry {
 #define BTRFS_DEV_STATE_MISSING		(2)
 #define BTRFS_DEV_STATE_REPLACE_TGT	(3)
 #define BTRFS_DEV_STATE_FLUSH_SENT	(4)
+#define BTRFS_DEV_STATE_NO_READA	(5)
 
 struct btrfs_device {
 	struct list_head dev_list; /* device_list_mutex */
@@ -58,7 +59,7 @@ struct btrfs_device {
 	struct btrfs_fs_devices *fs_devices;
 	struct btrfs_fs_info *fs_info;
 
-	struct rcu_string *name;
+	struct rcu_string __rcu *name;
 
 	u64 generation;
 
@@ -246,7 +247,7 @@ struct btrfs_fs_devices {
 	 */
 	struct list_head alloc_list;
 
-	struct btrfs_fs_devices *seed;
+	struct list_head seed_list;
 	bool seeding;
 
 	int opened;
@@ -435,7 +436,7 @@ int btrfs_open_devices(struct btrfs_fs_devices *fs_devices,
 struct btrfs_device *btrfs_scan_one_device(const char *path,
 					   fmode_t flags, void *holder);
 int btrfs_forget_devices(const char *path);
-int btrfs_close_devices(struct btrfs_fs_devices *fs_devices);
+void btrfs_close_devices(struct btrfs_fs_devices *fs_devices);
 void btrfs_free_extra_devids(struct btrfs_fs_devices *fs_devices, int step);
 void btrfs_assign_next_active_device(struct btrfs_device *device,
 				     struct btrfs_device *this_dev);
@@ -569,8 +570,6 @@ static inline enum btrfs_raid_types btrfs_bg_flags_to_raid_index(u64 flags)
 void btrfs_commit_device_sizes(struct btrfs_transaction *trans);
 
 struct list_head * __attribute_const__ btrfs_get_fs_uuids(void);
-void btrfs_set_fs_info_ptr(struct btrfs_fs_info *fs_info);
-void btrfs_reset_fs_info_ptr(struct btrfs_fs_info *fs_info);
 bool btrfs_check_rw_degradable(struct btrfs_fs_info *fs_info,
 					struct btrfs_device *failing_dev);
 void btrfs_scratch_superblocks(struct btrfs_fs_info *fs_info,

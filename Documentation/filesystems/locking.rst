@@ -125,7 +125,7 @@ prototypes::
 	bool (*list)(struct dentry *dentry);
 	int (*get)(const struct xattr_handler *handler, struct dentry *dentry,
 		   struct inode *inode, const char *name, void *buffer,
-		   size_t size);
+		   size_t size, int flags);
 	int (*set)(const struct xattr_handler *handler, struct dentry *dentry,
 		   struct inode *inode, const char *name, const void *buffer,
 		   size_t size, int flags);
@@ -487,9 +487,6 @@ revalidate_disk:	no
 getgeo:			no
 swap_slot_free_notify:	no	(see below)
 ======================= ===================
-
-unlock_native_capacity and revalidate_disk are called only from
-check_disk_change().
 
 swap_slot_free_notify is called with swap_lock and sometimes the page lock
 held.

@@ -29,6 +29,7 @@
 
 #include <linux/list.h>
 #include <linux/irqreturn.h>
+#include <linux/uuid.h>
 
 #include <drm/drm_device.h>
 
@@ -163,13 +164,12 @@ struct drm_driver {
 	/**
 	 * @load:
 	 *
-	 * Backward-compatible driver callback to complete
-	 * initialization steps after the driver is registered.  For
-	 * this reason, may suffer from race conditions and its use is
-	 * deprecated for new drivers.  It is therefore only supported
-	 * for existing drivers not yet converted to the new scheme.
-	 * See drm_dev_init() and drm_dev_register() for proper and
-	 * race-free way to set up a &struct drm_device.
+	 * Backward-compatible driver callback to complete initialization steps
+	 * after the driver is registered.  For this reason, may suffer from
+	 * race conditions and its use is deprecated for new drivers.  It is
+	 * therefore only supported for existing drivers not yet converted to
+	 * the new scheme.  See devm_drm_dev_alloc() and drm_dev_register() for
+	 * proper and race-free way to set up a &struct drm_device.
 	 *
 	 * This is deprecated, do not use!
 	 *
@@ -462,6 +462,15 @@ struct drm_driver {
 				struct vm_area_struct *vma);
 
 	/**
+	 * @gem_prime_get_uuid
+	 *
+	 * get_uuid hook for GEM drivers. Retrieves the virtio uuid of the
+	 * given GEM buffer.
+	 */
+	int (*gem_prime_get_uuid)(struct drm_gem_object *obj,
+				  uuid_t *uuid);
+
+	/**
 	 * @dumb_create:
 	 *
 	 * This creates a new dumb buffer in the driver's backing storage manager (GEM,
@@ -588,13 +597,6 @@ struct drm_driver {
 	void (*disable_vblank)(struct drm_device *dev, unsigned int pipe);
 	int dev_priv_size;
 };
-
-int drm_dev_init(struct drm_device *dev,
-		 struct drm_driver *driver,
-		 struct device *parent);
-int devm_drm_dev_init(struct device *parent,
-		      struct drm_device *dev,
-		      struct drm_driver *driver);
 
 void *__devm_drm_dev_alloc(struct device *parent, struct drm_driver *driver,
 			   size_t size, size_t offset);

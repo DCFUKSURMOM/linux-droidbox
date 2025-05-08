@@ -674,7 +674,7 @@ EXPORT_SYMBOL(drm_calc_timestamping_constants);
  *
  * Note that atomic drivers must call drm_calc_timestamping_constants() before
  * enabling a CRTC. The atomic helpers already take care of that in
- * drm_atomic_helper_update_legacy_modeset_state().
+ * drm_atomic_helper_calc_timestamping_constants().
  *
  * Returns:
  *
@@ -819,7 +819,7 @@ EXPORT_SYMBOL(drm_crtc_vblank_helper_get_vblank_timestamp_internal);
  *
  * Note that atomic drivers must call drm_calc_timestamping_constants() before
  * enabling a CRTC. The atomic helpers already take care of that in
- * drm_atomic_helper_update_legacy_modeset_state().
+ * drm_atomic_helper_calc_timestamping_constants().
  *
  * Returns:
  *
@@ -1000,7 +1000,14 @@ static void send_vblank_event(struct drm_device *dev,
 		break;
 	}
 	trace_drm_vblank_event_delivered(e->base.file_priv, e->pipe, seq);
-	drm_send_event_locked(dev, &e->base);
+	/*
+	 * Use the same timestamp for any associated fence signal to avoid
+	 * mismatch in timestamps for vsync & fence events triggered by the
+	 * same HW event. Frameworks like SurfaceFlinger in Android expects the
+	 * retire-fence timestamp to match exactly with HW vsync as it uses it
+	 * for its software vsync modeling.
+	 */
+	drm_send_event_timestamp_locked(dev, &e->base, now);
 }
 
 /**

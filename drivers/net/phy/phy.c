@@ -293,14 +293,16 @@ int phy_ethtool_ksettings_set(struct phy_device *phydev,
 
 	phydev->autoneg = autoneg;
 
-	phydev->speed = speed;
+	if (autoneg == AUTONEG_DISABLE) {
+		phydev->speed = speed;
+		phydev->duplex = duplex;
+	}
 
 	linkmode_copy(phydev->advertising, advertising);
 
 	linkmode_mod_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
 			 phydev->advertising, autoneg == AUTONEG_ENABLE);
 
-	phydev->duplex = duplex;
 	phydev->master_slave_set = cmd->base.master_slave_cfg;
 	phydev->mdix_ctrl = cmd->base.eth_tp_mdix_ctrl;
 
@@ -325,7 +327,7 @@ void phy_ethtool_ksettings_get(struct phy_device *phydev,
 	if (phydev->interface == PHY_INTERFACE_MODE_MOCA)
 		cmd->base.port = PORT_BNC;
 	else
-		cmd->base.port = PORT_MII;
+		cmd->base.port = phydev->port;
 	cmd->base.transceiver = phy_is_internal(phydev) ?
 				XCVR_INTERNAL : XCVR_EXTERNAL;
 	cmd->base.phy_address = phydev->mdio.addr;
@@ -456,7 +458,16 @@ int phy_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 }
 EXPORT_SYMBOL(phy_do_ioctl);
 
-/* same as phy_do_ioctl, but ensures that net_device is running */
+/**
+ * phy_do_ioctl_running - generic ndo_do_ioctl implementation but test first
+ *
+ * @dev: the net_device struct
+ * @ifr: &struct ifreq for socket ioctl's
+ * @cmd: ioctl cmd to execute
+ *
+ * Same as phy_do_ioctl, but ensures that net_device is running before
+ * handling the ioctl.
+ */
 int phy_do_ioctl_running(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	if (!netif_running(dev))
@@ -466,6 +477,12 @@ int phy_do_ioctl_running(struct net_device *dev, struct ifreq *ifr, int cmd)
 }
 EXPORT_SYMBOL(phy_do_ioctl_running);
 
+/**
+ * phy_queue_state_machine - Trigger the state machine to run soon
+ *
+ * @phydev: the phy_device struct
+ * @jiffies: Run the state machine after these jiffies
+ */
 void phy_queue_state_machine(struct phy_device *phydev, unsigned long jiffies)
 {
 	mod_delayed_work(system_power_efficient_wq, &phydev->state_queue,
@@ -473,6 +490,11 @@ void phy_queue_state_machine(struct phy_device *phydev, unsigned long jiffies)
 }
 EXPORT_SYMBOL(phy_queue_state_machine);
 
+/**
+ * phy_queue_state_machine - Trigger the state machine to run now
+ *
+ * @phydev: the phy_device struct
+ */
 static void phy_trigger_machine(struct phy_device *phydev)
 {
 	phy_queue_state_machine(phydev, 0);
@@ -489,6 +511,12 @@ static void phy_abort_cable_test(struct phy_device *phydev)
 		phydev_err(phydev, "Error while aborting cable test");
 }
 
+/**
+ * phy_ethtool_get_strings - Get the statistic counter names
+ *
+ * @phydev: the phy_device struct
+ * @data: Where to put the strings
+ */
 int phy_ethtool_get_strings(struct phy_device *phydev, u8 *data)
 {
 	if (!phydev->drv)
@@ -502,6 +530,11 @@ int phy_ethtool_get_strings(struct phy_device *phydev, u8 *data)
 }
 EXPORT_SYMBOL(phy_ethtool_get_strings);
 
+/**
+ * phy_ethtool_get_sset_count - Get the number of statistic counters
+ *
+ * @phydev: the phy_device struct
+ */
 int phy_ethtool_get_sset_count(struct phy_device *phydev)
 {
 	int ret;
@@ -523,6 +556,13 @@ int phy_ethtool_get_sset_count(struct phy_device *phydev)
 }
 EXPORT_SYMBOL(phy_ethtool_get_sset_count);
 
+/**
+ * phy_ethtool_get_stats - Get the statistic counters
+ *
+ * @phydev: the phy_device struct
+ * @stats: What counters to get
+ * @data: Where to store the counters
+ */
 int phy_ethtool_get_stats(struct phy_device *phydev,
 			  struct ethtool_stats *stats, u64 *data)
 {
@@ -537,6 +577,12 @@ int phy_ethtool_get_stats(struct phy_device *phydev,
 }
 EXPORT_SYMBOL(phy_ethtool_get_stats);
 
+/**
+ * phy_start_cable_test - Start a cable test
+ *
+ * @phydev: the phy_device struct
+ * @extack: extack for reporting useful error messages
+ */
 int phy_start_cable_test(struct phy_device *phydev,
 			 struct netlink_ext_ack *extack)
 {
@@ -600,6 +646,13 @@ out:
 }
 EXPORT_SYMBOL(phy_start_cable_test);
 
+/**
+ * phy_start_cable_test_tdr - Start a raw TDR cable test
+ *
+ * @phydev: the phy_device struct
+ * @extack: extack for reporting useful error messages
+ * @config: Configuration of the test to run
+ */
 int phy_start_cable_test_tdr(struct phy_device *phydev,
 			     struct netlink_ext_ack *extack,
 			     const struct phy_tdr_config *config)
@@ -1363,6 +1416,12 @@ int phy_ethtool_set_eee(struct phy_device *phydev, struct ethtool_eee *data)
 }
 EXPORT_SYMBOL(phy_ethtool_set_eee);
 
+/**
+ * phy_ethtool_set_wol - Configure Wake On LAN
+ *
+ * @phydev: target phy_device struct
+ * @wol: Configuration requested
+ */
 int phy_ethtool_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 {
 	if (phydev->drv && phydev->drv->set_wol)
@@ -1372,6 +1431,12 @@ int phy_ethtool_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 }
 EXPORT_SYMBOL(phy_ethtool_set_wol);
 
+/**
+ * phy_ethtool_get_wol - Get the current Wake On LAN configuration
+ *
+ * @phydev: target phy_device struct
+ * @wol: Store the current configuration here
+ */
 void phy_ethtool_get_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 {
 	if (phydev->drv && phydev->drv->get_wol)
@@ -1405,6 +1470,10 @@ int phy_ethtool_set_link_ksettings(struct net_device *ndev,
 }
 EXPORT_SYMBOL(phy_ethtool_set_link_ksettings);
 
+/**
+ * phy_ethtool_nway_reset - Restart auto negotiation
+ * @ndev: Network device to restart autoneg for
+ */
 int phy_ethtool_nway_reset(struct net_device *ndev)
 {
 	struct phy_device *phydev = ndev->phydev;

@@ -112,6 +112,185 @@ static DEFINE_MUTEX(register_mutex);
 static struct snd_usb_audio *usb_chip[SNDRV_CARDS];
 static struct usb_driver usb_audio_driver;
 
+static struct snd_usb_audio_vendor_ops *usb_vendor_ops;
+
+int snd_vendor_set_ops(struct snd_usb_audio_vendor_ops *ops)
+{
+	if ((!ops->connect) ||
+	    (!ops->disconnect) ||
+	    (!ops->set_interface) ||
+	    (!ops->set_rate) ||
+	    (!ops->set_pcm_buf) ||
+	    (!ops->set_pcm_intf) ||
+	    (!ops->set_pcm_connection) ||
+	    (!ops->set_pcm_binterval) ||
+	    (!ops->usb_add_ctls))
+		return -EINVAL;
+
+	usb_vendor_ops = ops;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(snd_vendor_set_ops);
+
+struct snd_usb_audio_vendor_ops *snd_vendor_get_ops(void)
+{
+	return usb_vendor_ops;
+}
+
+static int snd_vendor_connect(struct usb_interface *intf)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->connect(intf);
+	return 0;
+}
+
+static void snd_vendor_disconnect(struct usb_interface *intf)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		ops->disconnect(intf);
+}
+
+int snd_vendor_set_interface(struct usb_device *udev,
+			     struct usb_host_interface *intf,
+			     int iface, int alt)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->set_interface(udev, intf, iface, alt);
+	return 0;
+}
+
+int snd_vendor_set_rate(struct usb_interface *intf, int iface, int rate,
+			int alt)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->set_rate(intf, iface, rate, alt);
+	return 0;
+}
+
+int snd_vendor_set_pcm_buf(struct usb_device *udev, int iface)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		ops->set_pcm_buf(udev, iface);
+	return 0;
+}
+
+int snd_vendor_set_pcm_intf(struct usb_interface *intf, int iface, int alt,
+			    int direction)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->set_pcm_intf(intf, iface, alt, direction);
+	return 0;
+}
+
+int snd_vendor_set_pcm_connection(struct usb_device *udev,
+				  enum snd_vendor_pcm_open_close onoff,
+				  int direction)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->set_pcm_connection(udev, onoff, direction);
+	return 0;
+}
+
+int snd_vendor_set_pcm_binterval(struct audioformat *fp,
+				 struct audioformat *found,
+				 int *cur_attr, int *attr)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->set_pcm_binterval(fp, found, cur_attr, attr);
+	return 0;
+}
+
+static int snd_vendor_usb_add_ctls(struct snd_usb_audio *chip)
+{
+	struct snd_usb_audio_vendor_ops *ops = snd_vendor_get_ops();
+
+	if (ops)
+		return ops->usb_add_ctls(chip);
+	return 0;
+}
+
+struct snd_usb_substream *find_snd_usb_substream(unsigned int card_num,
+	unsigned int pcm_idx, unsigned int direction, struct snd_usb_audio
+	**uchip, void (*disconnect_cb)(struct snd_usb_audio *chip))
+{
+	int idx;
+	struct snd_usb_stream *as;
+	struct snd_usb_substream *subs = NULL;
+	struct snd_usb_audio *chip = NULL;
+
+	mutex_lock(&register_mutex);
+	/*
+	 * legacy audio snd card number assignment is dynamic. Hence
+	 * search using chip->card->number
+	 */
+	for (idx = 0; idx < SNDRV_CARDS; idx++) {
+		if (!usb_chip[idx])
+			continue;
+		if (usb_chip[idx]->card->number == card_num) {
+			chip = usb_chip[idx];
+			break;
+		}
+	}
+
+	if (!chip || atomic_read(&chip->shutdown)) {
+		pr_debug("%s: instance of usb crad # %d does not exist\n",
+			__func__, card_num);
+		goto err;
+	}
+
+	if (pcm_idx >= chip->pcm_devs) {
+		pr_err("%s: invalid pcm dev number %u > %d\n", __func__,
+			pcm_idx, chip->pcm_devs);
+		goto err;
+	}
+
+	if (direction > SNDRV_PCM_STREAM_CAPTURE) {
+		pr_err("%s: invalid direction %u\n", __func__, direction);
+		goto err;
+	}
+
+	list_for_each_entry(as, &chip->pcm_list, list) {
+		if (as->pcm_index == pcm_idx) {
+			subs = &as->substream[direction];
+			if (subs->interface < 0 && !subs->data_endpoint &&
+				!subs->sync_endpoint) {
+				pr_debug("%s: stream disconnected, bail out\n",
+					__func__);
+				subs = NULL;
+				goto err;
+			}
+			goto done;
+		}
+	}
+
+done:
+	chip->card_num = card_num;
+	chip->disconnect_cb = disconnect_cb;
+err:
+	*uchip = chip;
+	if (!subs)
+		pr_debug("%s: substream instance not found\n", __func__);
+	mutex_unlock(&register_mutex);
+	return subs;
+}
+EXPORT_SYMBOL_GPL(find_snd_usb_substream);
+
 /*
  * disconnect streams
  * called from usb_audio_disconnect()
@@ -333,6 +512,113 @@ static int snd_usb_create_streams(struct snd_usb_audio *chip, int ctrlif)
 }
 
 /*
+ * Profile name preset table
+ */
+struct usb_audio_device_name {
+	u32 id;
+	const char *vendor_name;
+	const char *product_name;
+	const char *profile_name;	/* override card->longname */
+};
+
+#define PROFILE_NAME(vid, pid, vendor, product, profile)	 \
+	{ .id = USB_ID(vid, pid), .vendor_name = (vendor),	 \
+	  .product_name = (product), .profile_name = (profile) }
+#define DEVICE_NAME(vid, pid, vendor, product) \
+	PROFILE_NAME(vid, pid, vendor, product, NULL)
+
+/* vendor/product and profile name presets, sorted in device id order */
+static const struct usb_audio_device_name usb_audio_names[] = {
+	/* HP Thunderbolt Dock Audio Headset */
+	PROFILE_NAME(0x03f0, 0x0269, "HP", "Thunderbolt Dock Audio Headset",
+		     "HP-Thunderbolt-Dock-Audio-Headset"),
+	/* HP Thunderbolt Dock Audio Module */
+	PROFILE_NAME(0x03f0, 0x0567, "HP", "Thunderbolt Dock Audio Module",
+		     "HP-Thunderbolt-Dock-Audio-Module"),
+
+	/* Two entries for Gigabyte TRX40 Aorus Master:
+	 * TRX40 Aorus Master has two USB-audio devices, one for the front
+	 * headphone with ESS SABRE9218 DAC chip, while another for the rest
+	 * I/O (the rear panel and the front mic) with Realtek ALC1220-VB.
+	 * Here we provide two distinct names for making UCM profiles easier.
+	 */
+	PROFILE_NAME(0x0414, 0xa000, "Gigabyte", "Aorus Master Front Headphone",
+		     "Gigabyte-Aorus-Master-Front-Headphone"),
+	PROFILE_NAME(0x0414, 0xa001, "Gigabyte", "Aorus Master Main Audio",
+		     "Gigabyte-Aorus-Master-Main-Audio"),
+
+	/* Gigabyte TRX40 Aorus Pro WiFi */
+	PROFILE_NAME(0x0414, 0xa002,
+		     "Realtek", "ALC1220-VB-DT", "Realtek-ALC1220-VB-Desktop"),
+
+	/* Creative/E-Mu devices */
+	DEVICE_NAME(0x041e, 0x3010, "Creative Labs", "Sound Blaster MP3+"),
+	/* Creative/Toshiba Multimedia Center SB-0500 */
+	DEVICE_NAME(0x041e, 0x3048, "Toshiba", "SB-0500"),
+
+	DEVICE_NAME(0x046d, 0x0990, "Logitech, Inc.", "QuickCam Pro 9000"),
+
+	/* ASUS ROG Strix */
+	PROFILE_NAME(0x0b05, 0x1917,
+		     "Realtek", "ALC1220-VB-DT", "Realtek-ALC1220-VB-Desktop"),
+	/* ASUS PRIME TRX40 PRO-S */
+	PROFILE_NAME(0x0b05, 0x1918,
+		     "Realtek", "ALC1220-VB-DT", "Realtek-ALC1220-VB-Desktop"),
+
+	/* Dell WD15 Dock */
+	PROFILE_NAME(0x0bda, 0x4014, "Dell", "WD15 Dock", "Dell-WD15-Dock"),
+	/* Dell WD19 Dock */
+	PROFILE_NAME(0x0bda, 0x402e, "Dell", "WD19 Dock", "Dell-WD15-Dock"),
+
+	DEVICE_NAME(0x0ccd, 0x0028, "TerraTec", "Aureon5.1MkII"),
+
+	/*
+	 * The original product_name is "USB Sound Device", however this name
+	 * is also used by the CM106 based cards, so make it unique.
+	 */
+	DEVICE_NAME(0x0d8c, 0x0102, NULL, "ICUSBAUDIO7D"),
+	DEVICE_NAME(0x0d8c, 0x0103, NULL, "Audio Advantage MicroII"),
+
+	/* MSI TRX40 Creator */
+	PROFILE_NAME(0x0db0, 0x0d64,
+		     "Realtek", "ALC1220-VB-DT", "Realtek-ALC1220-VB-Desktop"),
+	/* MSI TRX40 */
+	PROFILE_NAME(0x0db0, 0x543d,
+		     "Realtek", "ALC1220-VB-DT", "Realtek-ALC1220-VB-Desktop"),
+
+	/* Stanton/N2IT Final Scratch v1 device ('Scratchamp') */
+	DEVICE_NAME(0x103d, 0x0100, "Stanton", "ScratchAmp"),
+	DEVICE_NAME(0x103d, 0x0101, "Stanton", "ScratchAmp"),
+
+	/* aka. Serato Scratch Live DJ Box */
+	DEVICE_NAME(0x13e5, 0x0001, "Rane", "SL-1"),
+
+	/* Lenovo ThinkStation P620 Rear Line-in, Line-out and Microphone */
+	PROFILE_NAME(0x17aa, 0x1046, "Lenovo", "ThinkStation P620 Rear",
+		     "Lenovo-ThinkStation-P620-Rear"),
+	/* Lenovo ThinkStation P620 Internal Speaker + Front Headset */
+	PROFILE_NAME(0x17aa, 0x104d, "Lenovo", "ThinkStation P620 Main",
+		     "Lenovo-ThinkStation-P620-Main"),
+
+	/* Asrock TRX40 Creator */
+	PROFILE_NAME(0x26ce, 0x0a01,
+		     "Realtek", "ALC1220-VB-DT", "Realtek-ALC1220-VB-Desktop"),
+
+	{ } /* terminator */
+};
+
+static const struct usb_audio_device_name *
+lookup_device_name(u32 id)
+{
+	static const struct usb_audio_device_name *p;
+
+	for (p = usb_audio_names; p->id; p++)
+		if (p->id == id)
+			return p;
+	return NULL;
+}
+
+/*
  * free the chip instance
  *
  * here we have to do not much, since pcm and controls are already freed
@@ -347,6 +633,7 @@ static void snd_usb_audio_free(struct snd_card *card)
 	list_for_each_entry_safe(ep, n, &chip->ep_list, list)
 		snd_usb_endpoint_free(ep);
 
+	mutex_destroy(&chip->dev_lock);
 	mutex_destroy(&chip->mutex);
 	if (!atomic_read(&chip->shutdown))
 		dev_set_drvdata(&chip->dev->dev, NULL);
@@ -357,10 +644,16 @@ static void usb_audio_make_shortname(struct usb_device *dev,
 				     const struct snd_usb_audio_quirk *quirk)
 {
 	struct snd_card *card = chip->card;
+	const struct usb_audio_device_name *preset;
+	const char *s = NULL;
 
-	if (quirk && quirk->product_name && *quirk->product_name) {
-		strlcpy(card->shortname, quirk->product_name,
-			sizeof(card->shortname));
+	preset = lookup_device_name(chip->usb_id);
+	if (preset && preset->product_name)
+		s = preset->product_name;
+	else if (quirk && quirk->product_name)
+		s = quirk->product_name;
+	if (s && *s) {
+		strlcpy(card->shortname, s, sizeof(card->shortname));
 		return;
 	}
 
@@ -382,17 +675,26 @@ static void usb_audio_make_longname(struct usb_device *dev,
 				    const struct snd_usb_audio_quirk *quirk)
 {
 	struct snd_card *card = chip->card;
+	const struct usb_audio_device_name *preset;
+	const char *s = NULL;
 	int len;
 
+	preset = lookup_device_name(chip->usb_id);
+
 	/* shortcut - if any pre-defined string is given, use it */
-	if (quirk && quirk->profile_name && *quirk->profile_name) {
-		strlcpy(card->longname, quirk->profile_name,
-			sizeof(card->longname));
+	if (preset && preset->profile_name)
+		s = preset->profile_name;
+	if (s && *s) {
+		strlcpy(card->longname, s, sizeof(card->longname));
 		return;
 	}
 
-	if (quirk && quirk->vendor_name && *quirk->vendor_name) {
-		len = strlcpy(card->longname, quirk->vendor_name, sizeof(card->longname));
+	if (preset && preset->vendor_name)
+		s = preset->vendor_name;
+	else if (quirk && quirk->vendor_name)
+		s = quirk->vendor_name;
+	if (s && *s) {
+		len = strlcpy(card->longname, s, sizeof(card->longname));
 	} else {
 		/* retrieve the vendor and device strings as longname */
 		if (dev->descriptor.iManufacturer)
@@ -474,6 +776,7 @@ static int snd_usb_audio_create(struct usb_interface *intf,
 
 	chip = card->private_data;
 	mutex_init(&chip->mutex);
+	mutex_init(&chip->dev_lock);
 	init_waitqueue_head(&chip->shutdown_wait);
 	chip->index = idx;
 	chip->dev = dev;
@@ -598,6 +901,10 @@ static int usb_audio_probe(struct usb_interface *intf,
 	if (err < 0)
 		return err;
 
+	err = snd_vendor_connect(intf);
+	if (err)
+		return err;
+
 	/*
 	 * found a config.  now register to ALSA
 	 */
@@ -659,6 +966,8 @@ static int usb_audio_probe(struct usb_interface *intf,
 
 	dev_set_drvdata(&dev->dev, chip);
 
+	snd_vendor_usb_add_ctls(chip);
+
 	/*
 	 * For devices with more than one control interface, we assume the
 	 * first contains the audio controls. We might need a more specific
@@ -708,6 +1017,9 @@ static int usb_audio_probe(struct usb_interface *intf,
 		snd_media_device_create(chip, intf);
 	}
 
+	if (quirk)
+		chip->quirk_type = quirk->type;
+
 	usb_chip[chip->index] = chip;
 	chip->intf[chip->num_interfaces] = intf;
 	chip->num_interfaces++;
@@ -743,6 +1055,11 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 		return;
 
 	card = chip->card;
+
+	if (chip->disconnect_cb)
+		chip->disconnect_cb(chip);
+
+	snd_vendor_disconnect(intf);
 
 	mutex_lock(&register_mutex);
 	if (atomic_inc_return(&chip->shutdown) == 1) {
@@ -781,6 +1098,9 @@ static void usb_audio_disconnect(struct usb_interface *intf)
 			snd_usb_mixer_disconnect(mixer);
 		}
 	}
+
+	if (chip->quirk_type & QUIRK_SETUP_DISABLE_AUTOSUSPEND)
+		usb_enable_autosuspend(interface_to_usbdev(intf));
 
 	chip->num_interfaces--;
 	if (chip->num_interfaces <= 0) {

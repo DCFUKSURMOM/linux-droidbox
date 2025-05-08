@@ -161,8 +161,6 @@ config BLK_WBT_MQ
 	depends on BLK_WBT
 	help
 	Enable writeback throttling by default on multiqueue devices.
-	Multiqueue currently doesn't have support for IO scheduling,
-	enabling this option is recommended.
 
 config BLK_DEBUG_FS
 	bool "Block layer debugging information in debugfs"
@@ -223,7 +221,7 @@ config BLK_MQ_PCI
 	default y
 
 config BLK_MQ_VIRTIO
-	bool
+	tristate
 	depends on BLOCK && VIRTIO
 	default y
 

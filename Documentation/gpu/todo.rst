@@ -273,6 +273,24 @@ Contact: Daniel Vetter, Noralf Tronnes
 
 Level: Advanced
 
+Garbage collect fbdev scrolling acceleration
+--------------------------------------------
+
+Scroll acceleration is disabled in fbcon by hard-wiring p->scrollmode =
+SCROLL_REDRAW. There's a ton of code this will allow us to remove:
+- lots of code in fbcon.c
+- a bunch of the hooks in fbcon_ops, maybe the remaining hooks could be called
+  directly instead of the function table (with a switch on p->rotate)
+- fb_copyarea is unused after this, and can be deleted from all drivers
+
+Note that not all acceleration code can be deleted, since clearing and cursor
+support is still accelerated, which might be good candidates for further
+deletion projects.
+
+Contact: Daniel Vetter
+
+Level: Intermediate
+
 idr_init_base()
 ---------------
 
@@ -403,6 +421,52 @@ Contact: Emil Velikov, respective driver maintainers
 
 Level: Intermediate
 
+Plumb drm_atomic_state all over
+-------------------------------
+
+Currently various atomic functions take just a single or a handful of
+object states (eg. plane state). While that single object state can
+suffice for some simple cases, we often have to dig out additional
+object states for dealing with various dependencies between the individual
+objects or the hardware they represent. The process of digging out the
+additional states is rather non-intuitive and error prone.
+
+To fix that most functions should rather take the overall
+drm_atomic_state as one of their parameters. The other parameters
+would generally be the object(s) we mainly want to interact with.
+
+For example, instead of
+
+.. code-block:: c
+
+   int (*atomic_check)(struct drm_plane *plane, struct drm_plane_state *state);
+
+we would have something like
+
+.. code-block:: c
+
+   int (*atomic_check)(struct drm_plane *plane, struct drm_atomic_state *state);
+
+The implementation can then trivially gain access to any required object
+state(s) via drm_atomic_get_plane_state(), drm_atomic_get_new_plane_state(),
+drm_atomic_get_old_plane_state(), and their equivalents for
+other object types.
+
+Additionally many drivers currently access the object->state pointer
+directly in their commit functions. That is not going to work if we
+eg. want to allow deeper commit pipelines as those pointers could
+then point to the states corresponding to a future commit instead of
+the current commit we're trying to process. Also non-blocking commits
+execute locklessly so there are serious concerns with dereferencing
+the object->state pointers without holding the locks that protect them.
+Use of drm_atomic_get_new_plane_state(), drm_atomic_get_old_plane_state(),
+etc. avoids these problems as well since they relate to a specific
+commit via the passed in drm_atomic_state.
+
+Contact: Ville Syrjälä, Daniel Vetter
+
+Level: Intermediate
+
 
 Core refactorings
 =================
@@ -495,6 +559,27 @@ Some of these date from the very introduction of KMS in 2008 ...
   historical reasons) misnamed drm_primary_helper_destroy() function.
 
 Level: Intermediate
+
+Remove automatic page mapping from dma-buf importing
+----------------------------------------------------
+
+When importing dma-bufs, the dma-buf and PRIME frameworks automatically map
+imported pages into the importer's DMA area. drm_gem_prime_fd_to_handle() and
+drm_gem_prime_handle_to_fd() require that importers call dma_buf_attach()
+even if they never do actual device DMA, but only CPU access through
+dma_buf_vmap(). This is a problem for USB devices, which do not support DMA
+operations.
+
+To fix the issue, automatic page mappings should be removed from the
+buffer-sharing code. Fixing this is a bit more involved, since the import/export
+cache is also tied to &drm_gem_object.import_attach. Meanwhile we paper over
+this problem for USB devices by fishing out the USB host controller device, as
+long as that supports DMA. Otherwise importing can still needlessly fail.
+
+Contact: Thomas Zimmermann <tzimmermann@suse.de>, Daniel Vetter
+
+Level: Advanced
+
 
 Better Testing
 ==============

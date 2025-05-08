@@ -469,13 +469,19 @@ skl_program_scaler(struct intel_plane *plane,
 
 /* Preoffset values for YUV to RGB Conversion */
 #define PREOFF_YUV_TO_RGB_HI		0x1800
-#define PREOFF_YUV_TO_RGB_ME		0x1F00
+#define PREOFF_YUV_TO_RGB_ME		0x0000
 #define PREOFF_YUV_TO_RGB_LO		0x1800
 
 #define  ROFF(x)          (((x) & 0xffff) << 16)
 #define  GOFF(x)          (((x) & 0xffff) << 0)
 #define  BOFF(x)          (((x) & 0xffff) << 16)
 
+/*
+ * Programs the input color space conversion stage for ICL HDR planes.
+ * Note that it is assumed that this stage always happens after YUV
+ * range correction. Thus, the input to this stage is assumed to be
+ * in full-range YCbCr.
+ */
 static void
 icl_program_input_csc(struct intel_plane *plane,
 		      const struct intel_crtc_state *crtc_state,
@@ -523,52 +529,7 @@ icl_program_input_csc(struct intel_plane *plane,
 			0x0, 0x7800, 0x7F10,
 		},
 	};
-
-	/* Matrix for Limited Range to Full Range Conversion */
-	static const u16 input_csc_matrix_lr[][9] = {
-		/*
-		 * BT.601 Limted range YCbCr -> full range RGB
-		 * The matrix required is :
-		 * [1.164384, 0.000, 1.596027,
-		 *  1.164384, -0.39175, -0.812813,
-		 *  1.164384, 2.017232, 0.0000]
-		 */
-		[DRM_COLOR_YCBCR_BT601] = {
-			0x7CC8, 0x7950, 0x0,
-			0x8D00, 0x7950, 0x9C88,
-			0x0, 0x7950, 0x6810,
-		},
-		/*
-		 * BT.709 Limited range YCbCr -> full range RGB
-		 * The matrix required is :
-		 * [1.164384, 0.000, 1.792741,
-		 *  1.164384, -0.213249, -0.532909,
-		 *  1.164384, 2.112402, 0.0000]
-		 */
-		[DRM_COLOR_YCBCR_BT709] = {
-			0x7E58, 0x7950, 0x0,
-			0x8888, 0x7950, 0xADA8,
-			0x0, 0x7950,  0x6870,
-		},
-		/*
-		 * BT.2020 Limited range YCbCr -> full range RGB
-		 * The matrix required is :
-		 * [1.164, 0.000, 1.678,
-		 *  1.164, -0.1873, -0.6504,
-		 *  1.164, 2.1417, 0.0000]
-		 */
-		[DRM_COLOR_YCBCR_BT2020] = {
-			0x7D70, 0x7950, 0x0,
-			0x8A68, 0x7950, 0xAC00,
-			0x0, 0x7950, 0x6890,
-		},
-	};
-	const u16 *csc;
-
-	if (plane_state->hw.color_range == DRM_COLOR_YCBCR_FULL_RANGE)
-		csc = input_csc_matrix[plane_state->hw.color_encoding];
-	else
-		csc = input_csc_matrix_lr[plane_state->hw.color_encoding];
+	const u16 *csc = input_csc_matrix[plane_state->hw.color_encoding];
 
 	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_COEFF(pipe, plane_id, 0),
 			  ROFF(csc[0]) | GOFF(csc[1]));
@@ -585,14 +546,8 @@ icl_program_input_csc(struct intel_plane *plane,
 
 	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 0),
 			  PREOFF_YUV_TO_RGB_HI);
-	if (plane_state->hw.color_range == DRM_COLOR_YCBCR_FULL_RANGE)
-		intel_de_write_fw(dev_priv,
-				  PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 1),
-				  0);
-	else
-		intel_de_write_fw(dev_priv,
-				  PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 1),
-				  PREOFF_YUV_TO_RGB_ME);
+	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 1),
+			  PREOFF_YUV_TO_RGB_ME);
 	intel_de_write_fw(dev_priv, PLANE_INPUT_CSC_PREOFF(pipe, plane_id, 2),
 			  PREOFF_YUV_TO_RGB_LO);
 	intel_de_write_fw(dev_priv,
@@ -1626,8 +1581,7 @@ static int g4x_sprite_min_cdclk(const struct intel_crtc_state *crtc_state,
 	hscale = drm_rect_calc_hscale(&plane_state->uapi.src,
 				      &plane_state->uapi.dst,
 				      0, INT_MAX);
-	if (hscale < 0x10000)
-		return pixel_rate;
+	hscale = max(hscale, 0x10000u);
 
 	/* Decimation steps at 2x,4x,8x,16x */
 	decimate = ilog2(hscale >> 16);
@@ -1640,8 +1594,8 @@ static int g4x_sprite_min_cdclk(const struct intel_crtc_state *crtc_state,
 	limit -= decimate;
 
 	/* -10% for RGB */
-	if (fb->format->cpp[0] >= 4)
-		limit--; /* -10% for RGB */
+	if (!fb->format->is_yuv)
+		limit--;
 
 	/*
 	 * We should also do -10% if sprite scaling is enabled
@@ -2843,8 +2797,9 @@ static bool skl_plane_format_mod_supported(struct drm_plane *_plane,
 static bool gen12_plane_supports_mc_ccs(struct drm_i915_private *dev_priv,
 					enum plane_id plane_id)
 {
-	/* Wa_14010477008:tgl[a0..c0] */
-	if (IS_TGL_REVID(dev_priv, TGL_REVID_A0, TGL_REVID_C0))
+	/* Wa_14010477008:tgl[a0..c0],rkl[all] */
+	if (IS_ROCKETLAKE(dev_priv) ||
+	    IS_TGL_DISP_REVID(dev_priv, TGL_REVID_A0, TGL_REVID_C0))
 		return false;
 
 	return plane_id < PLANE_SPRITE4;

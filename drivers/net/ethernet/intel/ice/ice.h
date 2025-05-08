@@ -68,7 +68,9 @@
 #define ICE_INT_NAME_STR_LEN	(IFNAMSIZ + 16)
 #define ICE_AQ_LEN		64
 #define ICE_MBXSQ_LEN		64
-#define ICE_MIN_MSIX		2
+#define ICE_MIN_LAN_TXRX_MSIX	1
+#define ICE_MIN_LAN_OICR_MSIX	1
+#define ICE_MIN_MSIX		(ICE_MIN_LAN_TXRX_MSIX + ICE_MIN_LAN_OICR_MSIX)
 #define ICE_FDIR_MSIX		1
 #define ICE_NO_VSI		0xffff
 #define ICE_VSI_MAP_CONTIG	0
@@ -192,7 +194,6 @@ enum ice_state {
 	__ICE_NEEDS_RESTART,
 	__ICE_PREPARED_FOR_RESET,	/* set by driver when prepared */
 	__ICE_RESET_OICR_RECV,		/* set by driver after rcv reset OICR */
-	__ICE_DCBNL_DEVRESET,		/* set by dcbnl devreset */
 	__ICE_PFR_REQ,			/* set by driver and peers */
 	__ICE_CORER_REQ,		/* set by driver and peers */
 	__ICE_GLOBR_REQ,		/* set by driver and peers */
@@ -284,6 +285,10 @@ struct ice_vsi {
 	spinlock_t arfs_lock;	/* protects aRFS hash table and filter state */
 	atomic_t *arfs_last_fltr_id;
 
+	/* devlink port data */
+	struct devlink_port devlink_port;
+	bool devlink_port_registered;
+
 	u16 max_frame;
 	u16 rx_buf_len;
 
@@ -321,9 +326,9 @@ struct ice_vsi {
 	struct ice_ring **xdp_rings;	 /* XDP ring array */
 	u16 num_xdp_txq;		 /* Used XDP queues */
 	u8 xdp_mapping_mode;		 /* ICE_MAP_MODE_[CONTIG|SCATTER] */
-	struct xdp_umem **xsk_umems;
-	u16 num_xsk_umems_used;
-	u16 num_xsk_umems;
+	struct xsk_buff_pool **xsk_pools;
+	u16 num_xsk_pools_used;
+	u16 num_xsk_pools;
 } ____cacheline_internodealigned_in_smp;
 
 /* struct that defines an interrupt vector */
@@ -374,9 +379,6 @@ enum ice_pf_flags {
 
 struct ice_pf {
 	struct pci_dev *pdev;
-
-	/* devlink port data */
-	struct devlink_port devlink_port;
 
 	struct devlink_region *nvm_region;
 	struct devlink_region *devcaps_region;
@@ -441,9 +443,7 @@ struct ice_pf {
 	struct ice_hw_port_stats stats_prev;
 	struct ice_hw hw;
 	u8 stat_prev_loaded:1; /* has previous stats been loaded */
-#ifdef CONFIG_DCB
 	u16 dcbx_cap;
-#endif /* CONFIG_DCB */
 	u32 tx_timeout_count;
 	unsigned long tx_timeout_last_recovery;
 	u32 tx_timeout_recovery_level;
@@ -507,25 +507,25 @@ static inline void ice_set_ring_xdp(struct ice_ring *ring)
 }
 
 /**
- * ice_xsk_umem - get XDP UMEM bound to a ring
- * @ring - ring to use
+ * ice_xsk_pool - get XSK buffer pool bound to a ring
+ * @ring: ring to use
  *
- * Returns a pointer to xdp_umem structure if there is an UMEM present,
+ * Returns a pointer to xdp_umem structure if there is a buffer pool present,
  * NULL otherwise.
  */
-static inline struct xdp_umem *ice_xsk_umem(struct ice_ring *ring)
+static inline struct xsk_buff_pool *ice_xsk_pool(struct ice_ring *ring)
 {
-	struct xdp_umem **umems = ring->vsi->xsk_umems;
+	struct xsk_buff_pool **pools = ring->vsi->xsk_pools;
 	u16 qid = ring->q_index;
 
 	if (ice_ring_is_xdp(ring))
 		qid -= ring->vsi->num_xdp_txq;
 
-	if (qid >= ring->vsi->num_xsk_umems || !umems || !umems[qid] ||
+	if (qid >= ring->vsi->num_xsk_pools || !pools || !pools[qid] ||
 	    !ice_is_xdp_ena_vsi(ring->vsi))
 		return NULL;
 
-	return umems[qid];
+	return pools[qid];
 }
 
 /**
@@ -586,7 +586,7 @@ int ice_schedule_reset(struct ice_pf *pf, enum ice_reset_req reset);
 void ice_print_link_msg(struct ice_vsi *vsi, bool isup);
 const char *ice_stat_str(enum ice_status stat_err);
 const char *ice_aq_str(enum ice_aq_err aq_err);
-bool ice_is_wol_supported(struct ice_pf *pf);
+bool ice_is_wol_supported(struct ice_hw *hw);
 int
 ice_fdir_write_fltr(struct ice_pf *pf, struct ice_fdir_fltr *input, bool add,
 		    bool is_tun);
@@ -604,6 +604,7 @@ int ice_fdir_create_dflt_rules(struct ice_pf *pf);
 int ice_aq_wait_for_event(struct ice_pf *pf, u16 opcode, unsigned long timeout,
 			  struct ice_rq_event_info *event);
 int ice_open(struct net_device *netdev);
+int ice_open_internal(struct net_device *netdev);
 int ice_stop(struct net_device *netdev);
 void ice_service_task_schedule(struct ice_pf *pf);
 

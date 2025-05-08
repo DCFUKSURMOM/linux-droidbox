@@ -20,18 +20,29 @@
 #include <linux/percpu.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
+#include <trace/hooks/topology.h>
 
-__weak bool arch_freq_counters_available(struct cpumask *cpus)
+bool topology_scale_freq_invariant(void)
+{
+	return cpufreq_supports_freq_invariance() ||
+	       arch_freq_counters_available(cpu_online_mask);
+}
+
+__weak bool arch_freq_counters_available(const struct cpumask *cpus)
 {
 	return false;
 }
 DEFINE_PER_CPU(unsigned long, freq_scale) = SCHED_CAPACITY_SCALE;
+EXPORT_PER_CPU_SYMBOL_GPL(freq_scale);
 
-void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
-			 unsigned long max_freq)
+void topology_set_freq_scale(const struct cpumask *cpus, unsigned long cur_freq,
+			     unsigned long max_freq)
 {
 	unsigned long scale;
 	int i;
+
+	if (WARN_ON_ONCE(!cur_freq || !max_freq))
+		return;
 
 	/*
 	 * If the use of counters for FIE is enabled, just return as we don't
@@ -43,11 +54,14 @@ void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
 
 	scale = (cur_freq << SCHED_CAPACITY_SHIFT) / max_freq;
 
+	trace_android_vh_arch_set_freq_scale(cpus, cur_freq, max_freq, &scale);
+
 	for_each_cpu(i, cpus)
 		per_cpu(freq_scale, i) = scale;
 }
 
 DEFINE_PER_CPU(unsigned long, cpu_scale) = SCHED_CAPACITY_SCALE;
+EXPORT_PER_CPU_SYMBOL_GPL(cpu_scale);
 
 void topology_set_cpu_scale(unsigned int cpu, unsigned long capacity)
 {
@@ -55,6 +69,7 @@ void topology_set_cpu_scale(unsigned int cpu, unsigned long capacity)
 }
 
 DEFINE_PER_CPU(unsigned long, thermal_pressure);
+EXPORT_PER_CPU_SYMBOL_GPL(thermal_pressure);
 
 void topology_set_thermal_pressure(const struct cpumask *cpus,
 			       unsigned long th_pressure)
@@ -64,6 +79,7 @@ void topology_set_thermal_pressure(const struct cpumask *cpus,
 	for_each_cpu(cpu, cpus)
 		WRITE_ONCE(per_cpu(thermal_pressure, cpu), th_pressure);
 }
+EXPORT_SYMBOL_GPL(topology_set_thermal_pressure);
 
 static ssize_t cpu_capacity_show(struct device *dev,
 				 struct device_attribute *attr,
@@ -71,7 +87,7 @@ static ssize_t cpu_capacity_show(struct device *dev,
 {
 	struct cpu *cpu = container_of(dev, struct cpu, dev);
 
-	return sprintf(buf, "%lu\n", topology_get_cpu_scale(cpu->dev.id));
+	return sysfs_emit(buf, "%lu\n", topology_get_cpu_scale(cpu->dev.id));
 }
 
 static void update_topology_flags_workfn(struct work_struct *work);

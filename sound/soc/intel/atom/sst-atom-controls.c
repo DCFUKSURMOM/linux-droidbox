@@ -299,7 +299,7 @@ static int sst_find_and_send_pipe_algo(struct sst_data *drv,
 {
 	int ret = 0;
 	struct sst_algo_control *bc;
-	struct sst_module *algo = NULL;
+	struct sst_module *algo;
 
 	dev_dbg(&drv->pdev->dev, "Enter: widget=%s\n", pipe);
 
@@ -602,7 +602,7 @@ static int sst_set_pipe_gain(struct sst_ids *ids,
 	int ret = 0;
 	struct sst_gain_mixer_control *mc;
 	struct sst_gain_value *gv;
-	struct sst_module *gain = NULL;
+	struct sst_module *gain;
 
 	list_for_each_entry(gain, &ids->gain_list, node) {
 		struct snd_kcontrol *kctl = gain->kctl;
@@ -945,7 +945,7 @@ int send_ssp_cmd(struct snd_soc_dai *dai, const char *id, bool enable)
 	struct sst_data *drv = snd_soc_dai_get_drvdata(dai);
 	int ssp_id;
 
-	dev_info(dai->dev, "Enter: enable=%d port_name=%s\n", enable, id);
+	dev_dbg(dai->dev, "Enter: enable=%d port_name=%s\n", enable, id);
 
 	if (strcmp(id, "ssp0-port") == 0)
 		ssp_id = SSP_MODEM;

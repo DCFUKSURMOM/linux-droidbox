@@ -49,6 +49,7 @@ enum npc_kpu_lb_ltype {
 	NPC_LT_LB_EDSA_VLAN,
 	NPC_LT_LB_EXDSA,
 	NPC_LT_LB_EXDSA_VLAN,
+	NPC_LT_LB_FDSA,
 	NPC_LT_LB_CUSTOM0 = 0xE,
 	NPC_LT_LB_CUSTOM1 = 0xF,
 };
@@ -77,21 +78,21 @@ enum npc_kpu_ld_ltype {
 	NPC_LT_LD_ICMP,
 	NPC_LT_LD_SCTP,
 	NPC_LT_LD_ICMP6,
+	NPC_LT_LD_CUSTOM0,
+	NPC_LT_LD_CUSTOM1,
 	NPC_LT_LD_IGMP = 8,
-	NPC_LT_LD_ESP,
 	NPC_LT_LD_AH,
 	NPC_LT_LD_GRE,
 	NPC_LT_LD_NVGRE,
 	NPC_LT_LD_NSH,
 	NPC_LT_LD_TU_MPLS_IN_NSH,
 	NPC_LT_LD_TU_MPLS_IN_IP,
-	NPC_LT_LD_CUSTOM0 = 0xE,
-	NPC_LT_LD_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_le_ltype {
 	NPC_LT_LE_VXLAN = 1,
 	NPC_LT_LE_GENEVE,
+	NPC_LT_LE_ESP,
 	NPC_LT_LE_GTPU = 4,
 	NPC_LT_LE_VXLANGPE,
 	NPC_LT_LE_GTPC,
@@ -139,6 +140,15 @@ enum npc_kpu_lh_ltype {
 	NPC_LT_LH_CUSTOM1 = 0xF,
 };
 
+/* NPC port kind defines how the incoming or outgoing packets
+ * are processed. NPC accepts packets from up to 64 pkinds.
+ * Software assigns pkind for each incoming port such as CGX
+ * Ethernet interfaces, LBK interfaces, etc.
+ */
+enum npc_pkind_type {
+	NPC_TX_DEF_PKIND = 63ULL,	/* NIX-TX PKIND */
+};
+
 struct npc_kpu_profile_cam {
 	u8 state;
 	u8 state_mask;
@@ -173,8 +183,8 @@ struct npc_kpu_profile_action {
 struct npc_kpu_profile {
 	int cam_entries;
 	int action_entries;
-	struct npc_kpu_profile_cam *cam;
-	struct npc_kpu_profile_action *action;
+	const struct npc_kpu_profile_cam *cam;
+	const struct npc_kpu_profile_action *action;
 };
 
 /* NPC KPU register formats */
@@ -296,6 +306,31 @@ struct nix_rx_action {
 #endif
 };
 
+/* NPC_AF_INTFX_KEX_CFG field masks */
+#define NPC_PARSE_NIBBLE		GENMASK_ULL(30, 0)
+
+/* NPC_PARSE_KEX_S nibble definitions for each field */
+#define NPC_PARSE_NIBBLE_CHAN		GENMASK_ULL(2, 0)
+#define NPC_PARSE_NIBBLE_ERRLEV		BIT_ULL(3)
+#define NPC_PARSE_NIBBLE_ERRCODE	GENMASK_ULL(5, 4)
+#define NPC_PARSE_NIBBLE_L2L3_BCAST	BIT_ULL(6)
+#define NPC_PARSE_NIBBLE_LA_FLAGS	GENMASK_ULL(8, 7)
+#define NPC_PARSE_NIBBLE_LA_LTYPE	BIT_ULL(9)
+#define NPC_PARSE_NIBBLE_LB_FLAGS	GENMASK_ULL(11, 10)
+#define NPC_PARSE_NIBBLE_LB_LTYPE	BIT_ULL(12)
+#define NPC_PARSE_NIBBLE_LC_FLAGS	GENMASK_ULL(14, 13)
+#define NPC_PARSE_NIBBLE_LC_LTYPE	BIT_ULL(15)
+#define NPC_PARSE_NIBBLE_LD_FLAGS	GENMASK_ULL(17, 16)
+#define NPC_PARSE_NIBBLE_LD_LTYPE	BIT_ULL(18)
+#define NPC_PARSE_NIBBLE_LE_FLAGS	GENMASK_ULL(20, 19)
+#define NPC_PARSE_NIBBLE_LE_LTYPE	BIT_ULL(21)
+#define NPC_PARSE_NIBBLE_LF_FLAGS	GENMASK_ULL(23, 22)
+#define NPC_PARSE_NIBBLE_LF_LTYPE	BIT_ULL(24)
+#define NPC_PARSE_NIBBLE_LG_FLAGS	GENMASK_ULL(26, 25)
+#define NPC_PARSE_NIBBLE_LG_LTYPE	BIT_ULL(27)
+#define NPC_PARSE_NIBBLE_LH_FLAGS	GENMASK_ULL(29, 28)
+#define NPC_PARSE_NIBBLE_LH_LTYPE	BIT_ULL(30)
+
 /* NIX Receive Vtag Action Structure */
 #define VTAG0_VALID_BIT		BIT_ULL(15)
 #define VTAG0_TYPE_MASK		GENMASK_ULL(14, 12)
@@ -319,5 +354,38 @@ struct npc_mcam_kex {
 	/* NPC_AF_INTF(0..1)_LDATA(0..1)_FLAGS(0..15)_CFG */
 	u64 intf_ld_flags[NPC_MAX_INTF][NPC_MAX_LD][NPC_MAX_LFL];
 } __packed;
+
+struct npc_lt_def {
+	u8	ltype_mask;
+	u8	ltype_match;
+	u8	lid;
+};
+
+struct npc_lt_def_ipsec {
+	u8	ltype_mask;
+	u8	ltype_match;
+	u8	lid;
+	u8	spi_offset;
+	u8	spi_nz;
+};
+
+struct npc_lt_def_cfg {
+	struct npc_lt_def	rx_ol2;
+	struct npc_lt_def	rx_oip4;
+	struct npc_lt_def	rx_iip4;
+	struct npc_lt_def	rx_oip6;
+	struct npc_lt_def	rx_iip6;
+	struct npc_lt_def	rx_otcp;
+	struct npc_lt_def	rx_itcp;
+	struct npc_lt_def	rx_oudp;
+	struct npc_lt_def	rx_iudp;
+	struct npc_lt_def	rx_osctp;
+	struct npc_lt_def	rx_isctp;
+	struct npc_lt_def_ipsec	rx_ipsec[2];
+	struct npc_lt_def	pck_ol2;
+	struct npc_lt_def	pck_oip4;
+	struct npc_lt_def	pck_oip6;
+	struct npc_lt_def	pck_iip4;
+};
 
 #endif /* NPC_H */

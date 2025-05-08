@@ -163,9 +163,9 @@ nouveau_channel_prep(struct nouveau_drm *drm, struct nvif_device *device,
 	atomic_set(&chan->killed, 0);
 
 	/* allocate memory for dma push buffer */
-	target = TTM_PL_FLAG_TT | TTM_PL_FLAG_UNCACHED;
+	target = NOUVEAU_GEM_DOMAIN_GART | NOUVEAU_GEM_DOMAIN_COHERENT;
 	if (nouveau_vram_pushbuf)
-		target = TTM_PL_FLAG_VRAM;
+		target = NOUVEAU_GEM_DOMAIN_VRAM;
 
 	ret = nouveau_bo_new(cli, size, 0, target, 0, 0, NULL, NULL,
 			    &chan->push.buffer);
@@ -533,6 +533,7 @@ nouveau_channel_new(struct nouveau_drm *drm, struct nvif_device *device,
 	if (ret) {
 		NV_PRINTK(err, cli, "channel failed to initialise, %d\n", ret);
 		nouveau_channel_del(pchan);
+		goto done;
 	}
 
 	ret = nouveau_svmm_join((*pchan)->vmm->svmm, (*pchan)->inst);

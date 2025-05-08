@@ -30,9 +30,6 @@
 #include <asm/rse.h>
 #include <linux/uaccess.h>
 #include <asm/unwind.h>
-#ifdef CONFIG_PERFMON
-#include <asm/perfmon.h>
-#endif
 
 #include "entry.h"
 
@@ -1951,27 +1948,6 @@ access_uarea(struct task_struct *child, unsigned long addr,
 				"address 0x%lx\n", addr);
 		return -1;
 	}
-#ifdef CONFIG_PERFMON
-	/*
-	 * Check if debug registers are used by perfmon. This
-	 * test must be done once we know that we can do the
-	 * operation, i.e. the arguments are all valid, but
-	 * before we start modifying the state.
-	 *
-	 * Perfmon needs to keep a count of how many processes
-	 * are trying to modify the debug registers for system
-	 * wide monitoring sessions.
-	 *
-	 * We also include read access here, because they may
-	 * cause the PMU-installed debug register state
-	 * (dbr[], ibr[]) to be reset. The two arrays are also
-	 * used by perfmon, but we do not use
-	 * IA64_THREAD_DBG_VALID. The registers are restored
-	 * by the PMU context switch code.
-	 */
-	if (pfm_use_debug_registers(child))
-		return -1;
-#endif
 
 	if (!(child->thread.flags & IA64_THREAD_DBG_VALID)) {
 		child->thread.flags |= IA64_THREAD_DBG_VALID;
@@ -2034,27 +2010,39 @@ static void syscall_get_set_args_cb(struct unw_frame_info *info, void *data)
 {
 	struct syscall_get_set_args *args = data;
 	struct pt_regs *pt = args->regs;
-	unsigned long *krbs, cfm, ndirty;
+	unsigned long *krbs, cfm, ndirty, nlocals, nouts;
 	int i, count;
 
 	if (unw_unwind_to_user(info) < 0)
 		return;
 
+	/*
+	 * We get here via a few paths:
+	 * - break instruction: cfm is shared with caller.
+	 *   syscall args are in out= regs, locals are non-empty.
+	 * - epsinstruction: cfm is set by br.call
+	 *   locals don't exist.
+	 *
+	 * For both cases argguments are reachable in cfm.sof - cfm.sol.
+	 * CFM: [ ... | sor: 17..14 | sol : 13..7 | sof : 6..0 ]
+	 */
 	cfm = pt->cr_ifs;
+	nlocals = (cfm >> 7) & 0x7f; /* aka sol */
+	nouts = (cfm & 0x7f) - nlocals; /* aka sof - sol */
 	krbs = (unsigned long *)info->task + IA64_RBS_OFFSET/8;
 	ndirty = ia64_rse_num_regs(krbs, krbs + (pt->loadrs >> 19));
 
 	count = 0;
 	if (in_syscall(pt))
-		count = min_t(int, args->n, cfm & 0x7f);
+		count = min_t(int, args->n, nouts);
 
+	/* Iterate over outs. */
 	for (i = 0; i < count; i++) {
+		int j = ndirty + nlocals + i + args->i;
 		if (args->rw)
-			*ia64_rse_skip_regs(krbs, ndirty + i + args->i) =
-				args->args[i];
+			*ia64_rse_skip_regs(krbs, j) = args->args[i];
 		else
-			args->args[i] = *ia64_rse_skip_regs(krbs,
-				ndirty + i + args->i);
+			args->args[i] = *ia64_rse_skip_regs(krbs, j);
 	}
 
 	if (!args->rw) {

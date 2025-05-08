@@ -23,6 +23,7 @@
 #define dsb(opt)	asm volatile("dsb " #opt : : : "memory")
 
 #define psb_csync()	asm volatile("hint #17" : : : "memory")
+#define tsb_csync()	asm volatile("hint #18" : : : "memory")
 #define csdb()		asm volatile("hint #20" : : : "memory")
 
 #define spec_bar()	asm volatile(ALTERNATIVE("dsb nsh\nisb\n",		\
@@ -45,6 +46,7 @@
 #define rmb()		dsb(ld)
 #define wmb()		dsb(st)
 
+#define dma_mb()	dmb(osh)
 #define dma_rmb()	dmb(oshld)
 #define dma_wmb()	dmb(oshst)
 
