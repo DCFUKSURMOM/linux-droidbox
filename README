@@ -1,7 +1,7 @@
 In order to avoid having to maintain 2 Xbox kernels, I have moved all development to here. My orignal fork has been archived
 
 This is an experimental Linux kernel for the orignal Xbox
-It was originally intended to be an Android x86 kernel but was shifted to being a general purpose kernel.
+It was originally intended to be an Android x86 kernel (hence the name) but was shifted to being a general purpose kernel.
 
 The kernel version is 5.13.19
 
