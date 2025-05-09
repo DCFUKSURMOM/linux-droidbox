@@ -1,5 +1,4 @@
 In order to avoid having to maintain 2 Xbox kernels, I have moved all development to here. My orignal fork has been archived
-This kernel works just fine as a "normal" kernel so there is no reason to have a completely separate one.
 
 This is an experimental Linux kernel for the orignal Xbox
 It was originally intended to be an Android x86 kernel but was shifted to being a general purpose kernel.
