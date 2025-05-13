@@ -1,11 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <asm/kup.h>
+#include <asm/smp.h>
 
-void __init setup_kuap(bool disabled)
+void setup_kuap(bool disabled)
 {
-	pr_info("Activating Kernel Userspace Access Protection\n");
+	if (!disabled) {
+		update_user_segments(mfsr(0) | SR_KS);
+		isync();        /* Context sync required after mtsr() */
+		init_mm.context.sr0 |= SR_KS;
+		current->thread.sr0 |= SR_KS;
+	}
+
+	if (smp_processor_id() != boot_cpuid)
+		return;
 
 	if (disabled)
-		pr_warn("KUAP cannot be disabled yet on 6xx when compiled in\n");
+		cur_cpu_spec->mmu_features &= ~MMU_FTR_KUAP;
+	else
+		pr_info("Activating Kernel Userspace Access Protection\n");
 }

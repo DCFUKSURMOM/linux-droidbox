@@ -7,13 +7,12 @@
  * Information: https://tools.ietf.org/html/rfc8439
  */
 
-#include <crypto/algapi.h>
 #include <crypto/chacha20poly1305.h>
 #include <crypto/chacha.h>
 #include <crypto/poly1305.h>
-#include <crypto/scatterwalk.h>
+#include <crypto/utils.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/mm.h>
@@ -318,8 +317,8 @@ bool chacha20poly1305_crypt_sg_inplace(struct scatterlist *src,
 
 	if (unlikely(sl > -POLY1305_DIGEST_SIZE)) {
 		poly1305_final(&poly1305_state, b.mac[1]);
-		scatterwalk_map_and_copy(b.mac[encrypt], src, src_len,
-					 sizeof(b.mac[1]), encrypt);
+		sg_copy_buffer(src, sg_nents(src), b.mac[encrypt],
+			       sizeof(b.mac[1]), src_len, !encrypt);
 		ret = encrypt ||
 		      !crypto_memneq(b.mac[0], b.mac[1], POLY1305_DIGEST_SIZE);
 	}
@@ -354,7 +353,7 @@ bool chacha20poly1305_decrypt_sg_inplace(struct scatterlist *src, size_t src_len
 }
 EXPORT_SYMBOL(chacha20poly1305_decrypt_sg_inplace);
 
-static int __init mod_init(void)
+static int __init chacha20poly1305_init(void)
 {
 	if (!IS_ENABLED(CONFIG_CRYPTO_MANAGER_DISABLE_TESTS) &&
 	    WARN_ON(!chacha20poly1305_selftest()))
@@ -362,12 +361,12 @@ static int __init mod_init(void)
 	return 0;
 }
 
-static void __exit mod_exit(void)
+static void __exit chacha20poly1305_exit(void)
 {
 }
 
-module_init(mod_init);
-module_exit(mod_exit);
+module_init(chacha20poly1305_init);
+module_exit(chacha20poly1305_exit);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("ChaCha20Poly1305 AEAD construction");
 MODULE_AUTHOR("Jason A. Donenfeld <Jason@zx2c4.com>");

@@ -66,7 +66,7 @@ static void tipc_sub_send_event(struct tipc_subscription *sub,
 /**
  * tipc_sub_check_overlap - test for subscription overlap with the given values
  * @subscribed: the service range subscribed for
- * @found: the service range we are checning for match
+ * @found: the service range we are checking for match
  *
  * Returns true if there is overlap, otherwise false.
  */
@@ -177,7 +177,7 @@ void tipc_sub_unsubscribe(struct tipc_subscription *sub)
 {
 	tipc_nametbl_unsubscribe(sub);
 	if (sub->evt.s.timeout != TIPC_WAIT_FOREVER)
-		del_timer_sync(&sub->timer);
+		timer_delete_sync(&sub->timer);
 	list_del(&sub->sub_list);
 	tipc_sub_put(sub);
 }

@@ -12,7 +12,6 @@
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/fs.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -547,30 +546,15 @@ static int rt1015_bypass_boost_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static void rt1015_flush_work(struct work_struct *work)
-{
-	struct rt1015_priv *rt1015 = container_of(work, struct rt1015_priv,
-						flush_work.work);
-	struct snd_soc_component *component = rt1015->component;
-	unsigned int val, i;
+static const char * const rt1015_dac_output_vol_select[] = {
+	"immediate",
+	"zero detection + immediate change",
+	"zero detection + inc/dec change",
+	"zero detection + soft inc/dec change",
+};
 
-	for (i = 0; i < 200; ++i) {
-		usleep_range(1000, 1500);
-		dev_dbg(component->dev, "Flush DAC (retry:%u)\n", i);
-		regmap_read(rt1015->regmap, RT1015_CLK_DET, &val);
-		if (val & 0x800)
-			break;
-	}
-
-	regmap_write(rt1015->regmap, RT1015_SYS_RST1, 0x0597);
-	regmap_write(rt1015->regmap, RT1015_SYS_RST1, 0x05f7);
-	regmap_write(rt1015->regmap, RT1015_MAN_I2C, 0x0028);
-
-	if (val & 0x800)
-		dev_dbg(component->dev, "Flush DAC completed.\n");
-	else
-		dev_warn(component->dev, "Fail to flush DAC data.\n");
-}
+static SOC_ENUM_SINGLE_DECL(rt1015_dac_vol_ctl_enum,
+	RT1015_DAC3, 2, rt1015_dac_output_vol_select);
 
 static const struct snd_kcontrol_new rt1015_snd_controls[] = {
 	SOC_SINGLE_TLV("DAC Playback Volume", RT1015_DAC1, RT1015_DAC_VOL_SFT,
@@ -582,6 +566,9 @@ static const struct snd_kcontrol_new rt1015_snd_controls[] = {
 	SOC_ENUM("Mono LR Select", rt1015_mono_lr_sel),
 	SOC_SINGLE_EXT("Bypass Boost", SND_SOC_NOPM, 0, 1, 0,
 		rt1015_bypass_boost_get, rt1015_bypass_boost_put),
+
+	/* DAC Output Volume Control */
+	SOC_ENUM("DAC Output Control", rt1015_dac_vol_ctl_enum),
 };
 
 static int rt1015_is_sys_clk_from_pll(struct snd_soc_dapm_widget *source,
@@ -630,10 +617,6 @@ static int r1015_dac_event(struct snd_soc_dapm_widget *w,
 		}
 		break;
 
-	case SND_SOC_DAPM_POST_PMU:
-		regmap_write(rt1015->regmap, RT1015_MAN_I2C, 0x00a8);
-		break;
-
 	case SND_SOC_DAPM_POST_PMD:
 		if (rt1015->bypass_boost == RT1015_Enable_Boost) {
 			snd_soc_component_write(component,
@@ -653,8 +636,6 @@ static int r1015_dac_event(struct snd_soc_dapm_widget *w,
 				RT1015_SYS_RST2, 0x0b9a);
 		}
 		rt1015->dac_is_used = 0;
-
-		cancel_delayed_work_sync(&rt1015->flush_work);
 		break;
 
 	default:
@@ -687,8 +668,6 @@ static int rt1015_amp_drv_event(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		if (rt1015->hw_config == RT1015_HW_28)
-			schedule_delayed_work(&rt1015->flush_work, msecs_to_jiffies(10));
 		msleep(rt1015->pdata.power_up_delay_ms);
 		break;
 	default:
@@ -702,7 +681,7 @@ static const struct snd_soc_dapm_widget rt1015_dapm_widgets[] = {
 		NULL, 0),
 	SND_SOC_DAPM_AIF_IN("AIFRX", "AIF Playback", 0, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_DAC_E("DAC", NULL, SND_SOC_NOPM, 0, 0,
-		r1015_dac_event, SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
+		r1015_dac_event, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_OUT_DRV_E("Amp Drv", SND_SOC_NOPM, 0, 0, NULL, 0,
 			rt1015_amp_drv_event, SND_SOC_DAPM_PRE_PMU |
@@ -722,7 +701,7 @@ static int rt1015_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_component *component = dai->component;
 	struct rt1015_priv *rt1015 = snd_soc_component_get_drvdata(component);
-	int pre_div, bclk_ms, frame_size, lrck;
+	int pre_div, frame_size, lrck;
 	unsigned int val_len = 0;
 
 	lrck = params_rate(params);
@@ -739,10 +718,7 @@ static int rt1015_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	bclk_ms = frame_size > 32;
-
-	dev_dbg(component->dev, "bclk_ms is %d and pre_div is %d for iis %d\n",
-				bclk_ms, pre_div, dai->id);
+	dev_dbg(component->dev, "pre_div is %d for iis %d\n", pre_div, dai->id);
 
 	dev_dbg(component->dev, "lrck is %dHz and pre_div is %d for iis %d\n",
 				lrck, pre_div, dai->id);
@@ -777,10 +753,10 @@ static int rt1015_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0, reg_val2 = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		reg_val |= RT1015_TCON_TDM_MS_M;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		reg_val |= RT1015_TCON_TDM_MS_S;
 		break;
 	default:
@@ -900,7 +876,7 @@ static int rt1015_set_component_pll(struct snd_soc_component *component,
 
 	ret = rl6231_pll_calc(freq_in, freq_out, &pll_code);
 	if (ret < 0) {
-		dev_err(component->dev, "Unsupport input clock %d\n", freq_in);
+		dev_err(component->dev, "Unsupported input clock %d\n", freq_in);
 		return ret;
 	}
 
@@ -1028,7 +1004,6 @@ static int rt1015_probe(struct snd_soc_component *component)
 		snd_soc_component_get_drvdata(component);
 
 	rt1015->component = component;
-	INIT_DELAYED_WORK(&rt1015->flush_work, rt1015_flush_work);
 
 	return 0;
 }
@@ -1037,7 +1012,6 @@ static void rt1015_remove(struct snd_soc_component *component)
 {
 	struct rt1015_priv *rt1015 = snd_soc_component_get_drvdata(component);
 
-	cancel_delayed_work_sync(&rt1015->flush_work);
 	regmap_write(rt1015->regmap, RT1015_RESET, 0);
 }
 
@@ -1109,7 +1083,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt1015 = {
 	.set_pll = rt1015_set_component_pll,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt1015_regmap = {
@@ -1124,7 +1097,7 @@ static const struct regmap_config rt1015_regmap = {
 };
 
 static const struct i2c_device_id rt1015_i2c_id[] = {
-	{ "rt1015", 0 },
+	{ "rt1015" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1015_i2c_id);
@@ -1132,15 +1105,15 @@ MODULE_DEVICE_TABLE(i2c, rt1015_i2c_id);
 #if defined(CONFIG_OF)
 static const struct of_device_id rt1015_of_match[] = {
 	{ .compatible = "realtek,rt1015", },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt1015_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1015_acpi_match[] = {
-	{"10EC1015", 0,},
-	{},
+	{ "10EC1015" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt1015_acpi_match);
 #endif
@@ -1151,8 +1124,7 @@ static void rt1015_parse_dt(struct rt1015_priv *rt1015, struct device *dev)
 		&rt1015->pdata.power_up_delay_ms);
 }
 
-static int rt1015_i2c_probe(struct i2c_client *i2c,
-	const struct i2c_device_id *id)
+static int rt1015_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt1015_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct rt1015_priv *rt1015;
@@ -1179,8 +1151,6 @@ static int rt1015_i2c_probe(struct i2c_client *i2c,
 			ret);
 		return ret;
 	}
-
-	rt1015->hw_config = (i2c->addr == 0x29) ? RT1015_HW_29 : RT1015_HW_28;
 
 	ret = regmap_read(rt1015->regmap, RT1015_DEVICE_ID, &val);
 	if (ret) {

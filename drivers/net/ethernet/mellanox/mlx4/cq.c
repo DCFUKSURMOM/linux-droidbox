@@ -115,7 +115,7 @@ void mlx4_cq_completion(struct mlx4_dev *dev, u32 cqn)
 		return;
 	}
 
-	/* Acessing the CQ outside of rcu_read_lock is safe, because
+	/* Accessing the CQ outside of rcu_read_lock is safe, because
 	 * the CQ is freed only after interrupt handling is completed.
 	 */
 	++cq->arm_sn;
@@ -137,7 +137,7 @@ void mlx4_cq_event(struct mlx4_dev *dev, u32 cqn, int event_type)
 		return;
 	}
 
-	/* Acessing the CQ outside of rcu_read_lock is safe, because
+	/* Accessing the CQ outside of rcu_read_lock is safe, because
 	 * the CQ is freed only after interrupt handling is completed.
 	 */
 	cq->event(cq, event_type);
@@ -314,7 +314,8 @@ static int mlx4_init_user_cqes(void *buf, int entries, int cqe_size)
 			buf += PAGE_SIZE;
 		}
 	} else {
-		err = copy_to_user((void __user *)buf, init_ents, entries * cqe_size) ?
+		err = copy_to_user((void __user *)buf, init_ents,
+				   array_size(entries, cqe_size)) ?
 			-EFAULT : 0;
 	}
 

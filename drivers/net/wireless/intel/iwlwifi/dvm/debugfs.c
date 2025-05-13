@@ -3,10 +3,6 @@
  *
  * Copyright(c) 2008 - 2014 Intel Corporation. All rights reserved.
  * Copyright (C) 2018 Intel Corporation
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
  *****************************************************************************/
 
 #include <linux/slab.h>
@@ -1874,7 +1870,7 @@ static ssize_t iwl_dbgfs_ucode_tracing_write(struct file *file,
 		}
 	} else {
 		priv->event_log.ucode_trace = false;
-		del_timer_sync(&priv->ucode_trace);
+		timer_delete_sync(&priv->ucode_trace);
 	}
 
 	return count;

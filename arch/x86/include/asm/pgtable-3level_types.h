@@ -2,7 +2,7 @@
 #ifndef _ASM_X86_PGTABLE_3LEVEL_DEFS_H
 #define _ASM_X86_PGTABLE_3LEVEL_DEFS_H
 
-#ifndef __ASSEMBLY__
+#ifndef __ASSEMBLER__
 #include <linux/types.h>
 
 typedef u64	pteval_t;
@@ -18,7 +18,14 @@ typedef union {
 	};
 	pteval_t pte;
 } pte_t;
-#endif	/* !__ASSEMBLY__ */
+
+typedef union {
+	struct {
+		unsigned long pmd_low, pmd_high;
+	};
+	pmdval_t pmd;
+} pmd_t;
+#endif	/* !__ASSEMBLER__ */
 
 #define SHARED_KERNEL_PMD	(!static_cpu_has(X86_FEATURE_PTI))
 

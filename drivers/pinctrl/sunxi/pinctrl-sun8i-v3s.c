@@ -18,10 +18,12 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/pinctrl/pinctrl.h>
 
 #include "pinctrl-sunxi.h"
+
+#define PINCTRL_SUN8I_V3	BIT(0)
+#define PINCTRL_SUN8I_V3S	BIT(1)
 
 static const struct sunxi_desc_pin sun8i_v3s_pins[] = {
 	/* Hole */
@@ -553,8 +555,8 @@ static int sun8i_v3s_pinctrl_probe(struct platform_device *pdev)
 {
 	unsigned long variant = (unsigned long)of_device_get_match_data(&pdev->dev);
 
-	return sunxi_pinctrl_init_with_variant(pdev, &sun8i_v3s_pinctrl_data,
-					       variant);
+	return sunxi_pinctrl_init_with_flags(pdev, &sun8i_v3s_pinctrl_data,
+					     variant);
 }
 
 static const struct of_device_id sun8i_v3s_pinctrl_match[] = {

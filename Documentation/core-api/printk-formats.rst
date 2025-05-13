@@ -15,9 +15,10 @@ Integer types
 
 	If variable is of Type,		use printk format specifier:
 	------------------------------------------------------------
-		char			%d or %x
+		signed char		%d or %hhx
 		unsigned char		%u or %x
-		short int		%d or %x
+		char			%u or %x
+		short int		%d or %hx
 		unsigned short int	%u or %x
 		int			%d or %x
 		unsigned int		%u or %x
@@ -27,9 +28,9 @@ Integer types
 		unsigned long long	%llu or %llx
 		size_t			%zu or %zx
 		ssize_t			%zd or %zx
-		s8			%d or %x
+		s8			%d or %hhx
 		u8			%u or %x
-		s16			%d or %x
+		s16			%d or %hx
 		u16			%u or %x
 		s32			%d or %x
 		u32			%u or %x
@@ -37,14 +38,13 @@ Integer types
 		u64			%llu or %llx
 
 
-If <type> is dependent on a config option for its size (e.g., sector_t,
-blkcnt_t) or is architecture-dependent for its size (e.g., tcflag_t), use a
-format specifier of its largest possible type and explicitly cast to it.
+If <type> is architecture-dependent for its size (e.g., cycles_t, tcflag_t) or
+is dependent on a config option for its size (e.g., blk_status_t), use a format
+specifier of its largest possible type and explicitly cast to it.
 
 Example::
 
-	printk("test: sector number/total blocks: %llu/%llu\n",
-		(unsigned long long)sector, (unsigned long long)blockcount);
+	printk("test: latency: %llu cycles\n", (unsigned long long)time);
 
 Reminder: sizeof() returns type size_t.
 
@@ -126,6 +126,18 @@ used when printing stack backtraces. The specifier takes into
 consideration the effect of compiler optimisations which may occur
 when tail-calls are used and marked with the noreturn GCC attribute.
 
+If the pointer is within a module, the module name and optionally build ID is
+printed after the symbol name with an extra ``b`` appended to the end of the
+specifier.
+
+::
+
+	%pS	versatile_init+0x0/0x110 [module_name]
+	%pSb	versatile_init+0x0/0x110 [module_name ed5019fdf5e53be37cb1ba7899292d7e143b259e]
+	%pSRb	versatile_init+0x9/0x110 [module_name ed5019fdf5e53be37cb1ba7899292d7e143b259e]
+		(with __builtin_extract_return_addr() translation)
+	%pBb	prev_fn_of_versatile_init+0x88/0x88 [module_name ed5019fdf5e53be37cb1ba7899292d7e143b259e]
+
 Probed Pointers from BPF / tracing
 ----------------------------------
 
@@ -197,12 +209,17 @@ Struct Resources
 ::
 
 	%pr	[mem 0x60000000-0x6fffffff flags 0x2200] or
+		[mem 0x60000000 flags 0x2200] or
 		[mem 0x0000000060000000-0x000000006fffffff flags 0x2200]
+		[mem 0x0000000060000000 flags 0x2200]
 	%pR	[mem 0x60000000-0x6fffffff pref] or
+		[mem 0x60000000 pref] or
 		[mem 0x0000000060000000-0x000000006fffffff pref]
+		[mem 0x0000000060000000 pref]
 
 For printing struct resources. The ``R`` and ``r`` specifiers result in a
-printed resource with (R) or without (r) a decoded flags member.
+printed resource with (R) or without (r) a decoded flags member.  If start is
+equal to end only print the start value.
 
 Passed by reference.
 
@@ -216,6 +233,19 @@ Physical address types phys_addr_t
 For printing a phys_addr_t type (and its derivatives, such as
 resource_size_t) which can vary based on build options, regardless of the
 width of the CPU data path.
+
+Passed by reference.
+
+Struct Range
+------------
+
+::
+
+	%pra    [range 0x0000000060000000-0x000000006fffffff] or
+		[range 0x0000000060000000]
+
+For printing struct range.  struct range holds an arbitrary range of u64
+values.  If start is equal to end only print the start value.
 
 Passed by reference.
 
@@ -514,9 +544,10 @@ Time and date
 ::
 
 	%pt[RT]			YYYY-mm-ddTHH:MM:SS
+	%pt[RT]s		YYYY-mm-dd HH:MM:SS
 	%pt[RT]d		YYYY-mm-dd
 	%pt[RT]t		HH:MM:SS
-	%pt[RT][dt][r]
+	%pt[RT][dt][r][s]
 
 For printing date and time as represented by::
 
@@ -527,6 +558,10 @@ in human readable format.
 
 By default year will be incremented by 1900 and month by 1.
 Use %pt[RT]r (raw) to suppress this behaviour.
+
+The %pt[RT]s (space) will override ISO 8601 separator by using ' ' (space)
+instead of 'T' (Capital T) between date and time. It won't have any effect
+when date or time is omitted.
 
 Passed by reference.
 
@@ -559,20 +594,24 @@ The field width is passed by value, the bitmap is passed by reference.
 Helper macros cpumask_pr_args() and nodemask_pr_args() are available to ease
 printing cpumask and nodemask.
 
-Flags bitfields such as page flags, gfp_flags
----------------------------------------------
+Flags bitfields such as page flags and gfp_flags
+--------------------------------------------------------
 
 ::
 
-	%pGp	referenced|uptodate|lru|active|private|node=0|zone=2|lastcpupid=0x1fffff
+	%pGp	0x17ffffc0002036(referenced|uptodate|lru|active|private|node=0|zone=2|lastcpupid=0x1fffff)
 	%pGg	GFP_USER|GFP_DMA32|GFP_NOWARN
 	%pGv	read|exec|mayread|maywrite|mayexec|denywrite
 
 For printing flags bitfields as a collection of symbolic constants that
 would construct the value. The type of flags is given by the third
-character. Currently supported are [p]age flags, [v]ma_flags (both
-expect ``unsigned long *``) and [g]fp_flags (expects ``gfp_t *``). The flag
-names and print order depends on the particular	type.
+character. Currently supported are:
+
+        - p - [p]age flags, expects value of type (``unsigned long *``)
+        - v - [v]ma_flags, expects value of type (``unsigned long *``)
+        - g - [g]fp_flags, expects value of type (``gfp_t *``)
+
+The flag names and print order depends on the particular type.
 
 Note that this format should not be used directly in the
 :c:func:`TP_printk()` part of a tracepoint. Instead, use the show_*_flags()
@@ -609,10 +648,20 @@ Examples::
 	%p4cc	Y10  little-endian (0x20303159)
 	%p4cc	NV12 big-endian (0xb231564e)
 
+Rust
+----
+
+::
+
+	%pA
+
+Only intended to be used from Rust code to format ``core::fmt::Arguments``.
+Do *not* use it from C.
+
 Thanks
 ======
 
-If you add other %p extensions, please extend <lib/test_printf.c> with
-one or more test cases, if at all feasible.
+If you add other %p extensions, please extend <lib/tests/printf_kunit.c>
+with one or more test cases, if at all feasible.
 
 Thank you for your cooperation and attention.

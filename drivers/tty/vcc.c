@@ -11,6 +11,7 @@
 #include <linux/sysfs.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
+#include <linux/termios_internal.h>
 #include <asm/vio.h>
 #include <asm/ldc.h>
 
@@ -35,7 +36,7 @@ struct vcc_port {
 	 * and guarantee that any characters that the driver accepts will
 	 * be eventually sent, either immediately or later.
 	 */
-	int chars_in_buffer;
+	size_t chars_in_buffer;
 	struct vio_vcc buffer;
 
 	struct timer_list rx_timer;
@@ -384,7 +385,7 @@ static void vcc_tx_timer(struct timer_list *t)
 	struct vcc_port *port = from_timer(port, t, tx_timer);
 	struct vio_vcc *pkt;
 	unsigned long flags;
-	int tosend = 0;
+	size_t tosend = 0;
 	int rv;
 
 	spin_lock_irqsave(&port->lock, flags);
@@ -473,9 +474,9 @@ static struct vio_version vcc_versions[] = {
 
 static struct tty_port_operations vcc_port_ops = { 0 };
 
-static ssize_t vcc_sysfs_domain_show(struct device *dev,
-				     struct device_attribute *attr,
-				     char *buf)
+static ssize_t domain_show(struct device *dev,
+			   struct device_attribute *attr,
+			   char *buf)
 {
 	struct vcc_port *port;
 	int rv;
@@ -505,9 +506,9 @@ static int vcc_send_ctl(struct vcc_port *port, int ctl)
 	return rv;
 }
 
-static ssize_t vcc_sysfs_break_store(struct device *dev,
-				     struct device_attribute *attr,
-				     const char *buf, size_t count)
+static ssize_t break_store(struct device *dev,
+			   struct device_attribute *attr,
+			   const char *buf, size_t count)
 {
 	struct vcc_port *port;
 	unsigned long flags;
@@ -530,8 +531,8 @@ static ssize_t vcc_sysfs_break_store(struct device *dev,
 	return rv;
 }
 
-static DEVICE_ATTR(domain, 0400, vcc_sysfs_domain_show, NULL);
-static DEVICE_ATTR(break, 0200, NULL, vcc_sysfs_break_store);
+static DEVICE_ATTR_ADMIN_RO(domain);
+static DEVICE_ATTR_WO(break);
 
 static struct attribute *vcc_sysfs_entries[] = {
 	&dev_attr_domain.attr,
@@ -578,18 +579,22 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		return -ENOMEM;
 
 	name = kstrdup(dev_name(&vdev->dev), GFP_KERNEL);
+	if (!name) {
+		rv = -ENOMEM;
+		goto free_port;
+	}
 
 	rv = vio_driver_init(&port->vio, vdev, VDEV_CONSOLE_CON, vcc_versions,
 			     ARRAY_SIZE(vcc_versions), NULL, name);
 	if (rv)
-		goto free_port;
+		goto free_name;
 
 	port->vio.debug = vcc_dbg_vio;
 	vcc_ldc_cfg.debug = vcc_dbg_ldc;
 
 	rv = vio_ldc_alloc(&port->vio, &vcc_ldc_cfg, port);
 	if (rv)
-		goto free_port;
+		goto free_name;
 
 	spin_lock_init(&port->lock);
 
@@ -623,6 +628,11 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		goto unreg_tty;
 	}
 	port->domain = kstrdup(domain, GFP_KERNEL);
+	if (!port->domain) {
+		rv = -ENOMEM;
+		goto unreg_tty;
+	}
+
 
 	mdesc_release(hp);
 
@@ -652,8 +662,9 @@ free_table:
 	vcc_table_remove(port->index);
 free_ldc:
 	vio_ldc_free(&port->vio);
-free_port:
+free_name:
 	kfree(name);
+free_port:
 	kfree(port);
 
 	return rv;
@@ -668,12 +679,12 @@ free_port:
  *
  * Return: status of removal
  */
-static int vcc_remove(struct vio_dev *vdev)
+static void vcc_remove(struct vio_dev *vdev)
 {
 	struct vcc_port *port = dev_get_drvdata(&vdev->dev);
 
-	del_timer_sync(&port->rx_timer);
-	del_timer_sync(&port->tx_timer);
+	timer_delete_sync(&port->rx_timer);
+	timer_delete_sync(&port->tx_timer);
 
 	/* If there's a process with the device open, do a synchronous
 	 * hangup of the TTY. This *may* cause the process to call close
@@ -689,7 +700,7 @@ static int vcc_remove(struct vio_dev *vdev)
 
 	tty_unregister_device(vcc_tty_driver, port->index);
 
-	del_timer_sync(&port->vio.timer);
+	timer_delete_sync(&port->vio.timer);
 	vio_ldc_free(&port->vio);
 	sysfs_remove_group(&vdev->dev.kobj, &vcc_attribute_group);
 	dev_set_drvdata(&vdev->dev, NULL);
@@ -703,8 +714,6 @@ static int vcc_remove(struct vio_dev *vdev)
 		kfree(port->domain);
 		kfree(port);
 	}
-
-	return 0;
 }
 
 static const struct vio_device_id vcc_match[] = {
@@ -805,14 +814,13 @@ static void vcc_hangup(struct tty_struct *tty)
 	tty_port_hangup(tty->port);
 }
 
-static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
-		     int count)
+static ssize_t vcc_write(struct tty_struct *tty, const u8 *buf, size_t count)
 {
 	struct vcc_port *port;
 	struct vio_vcc *pkt;
 	unsigned long flags;
-	int total_sent = 0;
-	int tosend = 0;
+	size_t total_sent = 0;
+	size_t tosend = 0;
 	int rv = -EINVAL;
 
 	port = vcc_get_ne(tty->index);
@@ -828,7 +836,8 @@ static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
 
 	while (count > 0) {
 		/* Minimum of data to write and space available */
-		tosend = min(count, (VCC_BUFF_LEN - port->chars_in_buffer));
+		tosend = min_t(size_t, count,
+			       (VCC_BUFF_LEN - port->chars_in_buffer));
 
 		if (!tosend)
 			break;
@@ -848,7 +857,7 @@ static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
 		 * hypervisor actually took it because we have it buffered.
 		 */
 		rv = ldc_write(port->vio.lp, pkt, (VIO_TAG_SIZE + tosend));
-		vccdbg("VCC: write: ldc_write(%d)=%d\n",
+		vccdbg("VCC: write: ldc_write(%zu)=%d\n",
 		       (VIO_TAG_SIZE + tosend), rv);
 
 		total_sent += tosend;
@@ -865,15 +874,15 @@ static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
 
 	vcc_put(port, false);
 
-	vccdbg("VCC: write: total=%d rv=%d", total_sent, rv);
+	vccdbg("VCC: write: total=%zu rv=%d", total_sent, rv);
 
 	return total_sent ? total_sent : rv;
 }
 
-static int vcc_write_room(struct tty_struct *tty)
+static unsigned int vcc_write_room(struct tty_struct *tty)
 {
 	struct vcc_port *port;
-	u64 num;
+	unsigned int num;
 
 	port = vcc_get_ne(tty->index);
 	if (unlikely(!port)) {
@@ -888,10 +897,10 @@ static int vcc_write_room(struct tty_struct *tty)
 	return num;
 }
 
-static int vcc_chars_in_buffer(struct tty_struct *tty)
+static unsigned int vcc_chars_in_buffer(struct tty_struct *tty)
 {
 	struct vcc_port *port;
-	u64 num;
+	unsigned int num;
 
 	port = vcc_get_ne(tty->index);
 	if (unlikely(!port)) {
@@ -1030,7 +1039,7 @@ static int vcc_tty_init(void)
 	rv = tty_register_driver(vcc_tty_driver);
 	if (rv) {
 		pr_err("VCC: TTY driver registration failed\n");
-		put_tty_driver(vcc_tty_driver);
+		tty_driver_kref_put(vcc_tty_driver);
 		vcc_tty_driver = NULL;
 		return rv;
 	}
@@ -1043,7 +1052,7 @@ static int vcc_tty_init(void)
 static void vcc_tty_exit(void)
 {
 	tty_unregister_driver(vcc_tty_driver);
-	put_tty_driver(vcc_tty_driver);
+	tty_driver_kref_put(vcc_tty_driver);
 	vccdbg("VCC: TTY driver unregistered\n");
 
 	vcc_tty_driver = NULL;

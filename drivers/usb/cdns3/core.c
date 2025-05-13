@@ -14,6 +14,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -332,7 +333,7 @@ exit:
 }
 
 /**
- * cdsn3_role_get - get current role of controller.
+ * cdns_role_get - get current role of controller.
  *
  * @sw: pointer to USB role switch structure
  *
@@ -394,7 +395,6 @@ pm_put:
 	return ret;
 }
 
-
 /**
  * cdns_wakeup_irq - interrupt handler for wakeup events
  * @irq: irq number for cdns3/cdnsp core device
@@ -419,7 +419,7 @@ static irqreturn_t cdns_wakeup_irq(int irq, void *data)
 }
 
 /**
- * cdns_probe - probe for cdns3/cdnsp core device
+ * cdns_init - probe for cdns3/cdnsp core device
  * @cdns: Pointer to cdns structure.
  *
  * Returns 0 on success otherwise negative errno
@@ -522,17 +522,15 @@ int cdns_suspend(struct cdns *cdns)
 }
 EXPORT_SYMBOL_GPL(cdns_suspend);
 
-int cdns_resume(struct cdns *cdns, u8 set_active)
+int cdns_resume(struct cdns *cdns)
 {
-	struct device *dev = cdns->dev;
+	bool power_lost = cdns_power_is_lost(cdns);
 	enum usb_role real_role;
 	bool role_changed = false;
 	int ret = 0;
 
-	if (cdns_power_is_lost(cdns)) {
-		if (cdns->role_sw) {
-			cdns->role = cdns_role_get(cdns->role_sw);
-		} else {
+	if (power_lost) {
+		if (!cdns->role_sw) {
 			real_role = cdns_hw_role_state_machine(cdns);
 			if (real_role != cdns->role) {
 				ret = cdns_hw_role_switch(cdns);
@@ -554,7 +552,15 @@ int cdns_resume(struct cdns *cdns, u8 set_active)
 	}
 
 	if (cdns->roles[cdns->role]->resume)
-		cdns->roles[cdns->role]->resume(cdns, cdns_power_is_lost(cdns));
+		cdns->roles[cdns->role]->resume(cdns, power_lost);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(cdns_resume);
+
+void cdns_set_active(struct cdns *cdns, u8 set_active)
+{
+	struct device *dev = cdns->dev;
 
 	if (set_active) {
 		pm_runtime_disable(dev);
@@ -562,9 +568,9 @@ int cdns_resume(struct cdns *cdns, u8 set_active)
 		pm_runtime_enable(dev);
 	}
 
-	return 0;
+	return;
 }
-EXPORT_SYMBOL_GPL(cdns_resume);
+EXPORT_SYMBOL_GPL(cdns_set_active);
 #endif /* CONFIG_PM_SLEEP */
 
 MODULE_AUTHOR("Peter Chen <peter.chen@nxp.com>");

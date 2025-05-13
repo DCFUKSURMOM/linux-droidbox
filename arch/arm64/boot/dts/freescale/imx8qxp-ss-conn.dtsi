@@ -4,6 +4,10 @@
  *	Dong Aisheng <aisheng.dong@nxp.com>
  */
 
+&usbphy1 {
+	compatible = "fsl,imx8qxp-usbphy", "fsl,imx7ulp-usbphy";
+};
+
 &usdhc1 {
 	compatible = "fsl,imx8qxp-usdhc", "fsl,imx7d-usdhc";
 };
@@ -17,9 +21,9 @@
 };
 
 &fec1 {
-	compatible = "fsl,imx8qxp-fec", "fsl,imx6sx-fec";
+	compatible = "fsl,imx8qxp-fec", "fsl,imx8qm-fec", "fsl,imx6sx-fec";
 };
 
 &fec2 {
-	compatible = "fsl,imx8qxp-fec", "fsl,imx6sx-fec";
+	compatible = "fsl,imx8qxp-fec", "fsl,imx8qm-fec", "fsl,imx6sx-fec";
 };

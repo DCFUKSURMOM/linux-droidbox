@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/slab.h>
-#include "ctree.h"
+#include "messages.h"
 #include "subpage.h"
+#include "btrfs_inode.h"
 
 /*
- * Subpage (sectorsize < PAGE_SIZE) support overview:
+ * Subpage (block size < folio size) support overview:
  *
  * Limitations:
  *
@@ -63,58 +64,75 @@
  */
 
 int btrfs_attach_subpage(const struct btrfs_fs_info *fs_info,
-			 struct page *page, enum btrfs_subpage_type type)
-{
-	struct btrfs_subpage *subpage = NULL;
-	int ret;
-
-	/*
-	 * We have cases like a dummy extent buffer page, which is not mappped
-	 * and doesn't need to be locked.
-	 */
-	if (page->mapping)
-		ASSERT(PageLocked(page));
-	/* Either not subpage, or the page already has private attached */
-	if (fs_info->sectorsize == PAGE_SIZE || PagePrivate(page))
-		return 0;
-
-	ret = btrfs_alloc_subpage(fs_info, &subpage, type);
-	if (ret < 0)
-		return ret;
-	attach_page_private(page, subpage);
-	return 0;
-}
-
-void btrfs_detach_subpage(const struct btrfs_fs_info *fs_info,
-			  struct page *page)
+			 struct folio *folio, enum btrfs_subpage_type type)
 {
 	struct btrfs_subpage *subpage;
 
-	/* Either not subpage, or already detached */
-	if (fs_info->sectorsize == PAGE_SIZE || !PagePrivate(page))
+	/* For metadata we don't support large folio yet. */
+	ASSERT(!folio_test_large(folio));
+
+	/*
+	 * We have cases like a dummy extent buffer page, which is not mapped
+	 * and doesn't need to be locked.
+	 */
+	if (folio->mapping)
+		ASSERT(folio_test_locked(folio));
+
+	/* Either not subpage, or the folio already has private attached. */
+	if (folio_test_private(folio))
+		return 0;
+	if (type == BTRFS_SUBPAGE_METADATA && !btrfs_meta_is_subpage(fs_info))
+		return 0;
+	if (type == BTRFS_SUBPAGE_DATA && !btrfs_is_subpage(fs_info, folio))
+		return 0;
+
+	subpage = btrfs_alloc_subpage(fs_info, folio_size(folio), type);
+	if (IS_ERR(subpage))
+		return  PTR_ERR(subpage);
+
+	folio_attach_private(folio, subpage);
+	return 0;
+}
+
+void btrfs_detach_subpage(const struct btrfs_fs_info *fs_info, struct folio *folio,
+			  enum btrfs_subpage_type type)
+{
+	struct btrfs_subpage *subpage;
+
+	/* Either not subpage, or the folio already has private attached. */
+	if (!folio_test_private(folio))
+		return;
+	if (type == BTRFS_SUBPAGE_METADATA && !btrfs_meta_is_subpage(fs_info))
+		return;
+	if (type == BTRFS_SUBPAGE_DATA && !btrfs_is_subpage(fs_info, folio))
 		return;
 
-	subpage = (struct btrfs_subpage *)detach_page_private(page);
+	subpage = folio_detach_private(folio);
 	ASSERT(subpage);
 	btrfs_free_subpage(subpage);
 }
 
-int btrfs_alloc_subpage(const struct btrfs_fs_info *fs_info,
-			struct btrfs_subpage **ret,
-			enum btrfs_subpage_type type)
+struct btrfs_subpage *btrfs_alloc_subpage(const struct btrfs_fs_info *fs_info,
+				size_t fsize, enum btrfs_subpage_type type)
 {
-	if (fs_info->sectorsize == PAGE_SIZE)
-		return 0;
+	struct btrfs_subpage *ret;
+	unsigned int real_size;
 
-	*ret = kzalloc(sizeof(struct btrfs_subpage), GFP_NOFS);
-	if (!*ret)
-		return -ENOMEM;
-	spin_lock_init(&(*ret)->lock);
+	ASSERT(fs_info->sectorsize < fsize);
+
+	real_size = struct_size(ret, bitmaps,
+			BITS_TO_LONGS(btrfs_bitmap_nr_max *
+				      (fsize >> fs_info->sectorsize_bits)));
+	ret = kzalloc(real_size, GFP_NOFS);
+	if (!ret)
+		return ERR_PTR(-ENOMEM);
+
+	spin_lock_init(&ret->lock);
 	if (type == BTRFS_SUBPAGE_METADATA)
-		atomic_set(&(*ret)->eb_refs, 0);
+		atomic_set(&ret->eb_refs, 0);
 	else
-		atomic_set(&(*ret)->readers, 0);
-	return 0;
+		atomic_set(&ret->nr_locked, 0);
+	return ret;
 }
 
 void btrfs_free_subpage(struct btrfs_subpage *subpage)
@@ -128,167 +146,266 @@ void btrfs_free_subpage(struct btrfs_subpage *subpage)
  * This is important for eb allocation, to prevent race with last eb freeing
  * of the same page.
  * With the eb_refs increased before the eb inserted into radix tree,
- * detach_extent_buffer_page() won't detach the page private while we're still
+ * detach_extent_buffer_page() won't detach the folio private while we're still
  * allocating the extent buffer.
  */
-void btrfs_page_inc_eb_refs(const struct btrfs_fs_info *fs_info,
-			    struct page *page)
+void btrfs_folio_inc_eb_refs(const struct btrfs_fs_info *fs_info, struct folio *folio)
 {
 	struct btrfs_subpage *subpage;
 
-	if (fs_info->sectorsize == PAGE_SIZE)
+	if (!btrfs_meta_is_subpage(fs_info))
 		return;
 
-	ASSERT(PagePrivate(page) && page->mapping);
-	lockdep_assert_held(&page->mapping->private_lock);
+	ASSERT(folio_test_private(folio) && folio->mapping);
+	lockdep_assert_held(&folio->mapping->i_private_lock);
 
-	subpage = (struct btrfs_subpage *)page->private;
+	subpage = folio_get_private(folio);
 	atomic_inc(&subpage->eb_refs);
 }
 
-void btrfs_page_dec_eb_refs(const struct btrfs_fs_info *fs_info,
-			    struct page *page)
+void btrfs_folio_dec_eb_refs(const struct btrfs_fs_info *fs_info, struct folio *folio)
 {
 	struct btrfs_subpage *subpage;
 
-	if (fs_info->sectorsize == PAGE_SIZE)
+	if (!btrfs_meta_is_subpage(fs_info))
 		return;
 
-	ASSERT(PagePrivate(page) && page->mapping);
-	lockdep_assert_held(&page->mapping->private_lock);
+	ASSERT(folio_test_private(folio) && folio->mapping);
+	lockdep_assert_held(&folio->mapping->i_private_lock);
 
-	subpage = (struct btrfs_subpage *)page->private;
+	subpage = folio_get_private(folio);
 	ASSERT(atomic_read(&subpage->eb_refs));
 	atomic_dec(&subpage->eb_refs);
 }
 
 static void btrfs_subpage_assert(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+				 struct folio *folio, u64 start, u32 len)
 {
+	/* For subpage support, the folio must be single page. */
+	ASSERT(folio_order(folio) == 0);
+
 	/* Basic checks */
-	ASSERT(PagePrivate(page) && page->private);
+	ASSERT(folio_test_private(folio) && folio_get_private(folio));
 	ASSERT(IS_ALIGNED(start, fs_info->sectorsize) &&
 	       IS_ALIGNED(len, fs_info->sectorsize));
 	/*
 	 * The range check only works for mapped page, we can still have
 	 * unmapped page like dummy extent buffer pages.
 	 */
-	if (page->mapping)
-		ASSERT(page_offset(page) <= start &&
-		       start + len <= page_offset(page) + PAGE_SIZE);
+	if (folio->mapping)
+		ASSERT(folio_pos(folio) <= start &&
+		       start + len <= folio_pos(folio) + folio_size(folio));
 }
 
-void btrfs_subpage_start_reader(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+#define subpage_calc_start_bit(fs_info, folio, name, start, len)	\
+({									\
+	unsigned int __start_bit;					\
+	const unsigned int blocks_per_folio =				\
+			   btrfs_blocks_per_folio(fs_info, folio);	\
+									\
+	btrfs_subpage_assert(fs_info, folio, start, len);		\
+	__start_bit = offset_in_folio(folio, start) >> fs_info->sectorsize_bits; \
+	__start_bit += blocks_per_folio * btrfs_bitmap_nr_##name;	\
+	__start_bit;							\
+})
+
+static void btrfs_subpage_clamp_range(struct folio *folio, u64 *start, u32 *len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	const int nbits = len >> fs_info->sectorsize_bits;
-	int ret;
+	u64 orig_start = *start;
+	u32 orig_len = *len;
 
-	btrfs_subpage_assert(fs_info, page, start, len);
-
-	ret = atomic_add_return(nbits, &subpage->readers);
-	ASSERT(ret == nbits);
+	*start = max_t(u64, folio_pos(folio), orig_start);
+	/*
+	 * For certain call sites like btrfs_drop_pages(), we may have pages
+	 * beyond the target range. In that case, just set @len to 0, subpage
+	 * helpers can handle @len == 0 without any problem.
+	 */
+	if (folio_pos(folio) >= orig_start + orig_len)
+		*len = 0;
+	else
+		*len = min_t(u64, folio_pos(folio) + folio_size(folio),
+			     orig_start + orig_len) - *start;
 }
 
-void btrfs_subpage_end_reader(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+static bool btrfs_subpage_end_and_test_lock(const struct btrfs_fs_info *fs_info,
+					    struct folio *folio, u64 start, u32 len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	const int nbits = len >> fs_info->sectorsize_bits;
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	const int start_bit = subpage_calc_start_bit(fs_info, folio, locked, start, len);
+	const int nbits = (len >> fs_info->sectorsize_bits);
+	unsigned long flags;
+	unsigned int cleared = 0;
+	int bit = start_bit;
+	bool last;
 
-	btrfs_subpage_assert(fs_info, page, start, len);
-	ASSERT(atomic_read(&subpage->readers) >= nbits);
-	if (atomic_sub_and_test(nbits, &subpage->readers))
-		unlock_page(page);
+	btrfs_subpage_assert(fs_info, folio, start, len);
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	/*
+	 * We have call sites passing @lock_page into
+	 * extent_clear_unlock_delalloc() for compression path.
+	 *
+	 * This @locked_page is locked by plain lock_page(), thus its
+	 * subpage::locked is 0.  Handle them in a special way.
+	 */
+	if (atomic_read(&subpage->nr_locked) == 0) {
+		spin_unlock_irqrestore(&subpage->lock, flags);
+		return true;
+	}
+
+	for_each_set_bit_from(bit, subpage->bitmaps, start_bit + nbits) {
+		clear_bit(bit, subpage->bitmaps);
+		cleared++;
+	}
+	ASSERT(atomic_read(&subpage->nr_locked) >= cleared);
+	last = atomic_sub_and_test(cleared, &subpage->nr_locked);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+	return last;
 }
 
 /*
- * Convert the [start, start + len) range into a u16 bitmap
+ * Handle different locked folios:
  *
- * For example: if start == page_offset() + 16K, len = 16K, we get 0x00f0.
+ * - Non-subpage folio
+ *   Just unlock it.
+ *
+ * - folio locked but without any subpage locked
+ *   This happens either before writepage_delalloc() or the delalloc range is
+ *   already handled by previous folio.
+ *   We can simple unlock it.
+ *
+ * - folio locked with subpage range locked.
+ *   We go through the locked sectors inside the range and clear their locked
+ *   bitmap, reduce the writer lock number, and unlock the page if that's
+ *   the last locked range.
  */
-static u16 btrfs_subpage_calc_bitmap(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+void btrfs_folio_end_lock(const struct btrfs_fs_info *fs_info,
+			  struct folio *folio, u64 start, u32 len)
 {
-	const int bit_start = offset_in_page(start) >> fs_info->sectorsize_bits;
-	const int nbits = len >> fs_info->sectorsize_bits;
+	struct btrfs_subpage *subpage = folio_get_private(folio);
 
-	btrfs_subpage_assert(fs_info, page, start, len);
+	ASSERT(folio_test_locked(folio));
+
+	if (unlikely(!fs_info) || !btrfs_is_subpage(fs_info, folio)) {
+		folio_unlock(folio);
+		return;
+	}
 
 	/*
-	 * Here nbits can be 16, thus can go beyond u16 range. We make the
-	 * first left shift to be calculate in unsigned long (at least u32),
-	 * then truncate the result to u16.
+	 * For subpage case, there are two types of locked page.  With or
+	 * without locked number.
+	 *
+	 * Since we own the page lock, no one else could touch subpage::locked
+	 * and we are safe to do several atomic operations without spinlock.
 	 */
-	return (u16)(((1UL << nbits) - 1) << bit_start);
+	if (atomic_read(&subpage->nr_locked) == 0) {
+		/* No subpage lock, locked by plain lock_page(). */
+		folio_unlock(folio);
+		return;
+	}
+
+	btrfs_subpage_clamp_range(folio, &start, &len);
+	if (btrfs_subpage_end_and_test_lock(fs_info, folio, start, len))
+		folio_unlock(folio);
 }
 
-void btrfs_subpage_set_uptodate(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+void btrfs_folio_end_lock_bitmap(const struct btrfs_fs_info *fs_info,
+				 struct folio *folio, unsigned long bitmap)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	const u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	const unsigned int blocks_per_folio = btrfs_blocks_per_folio(fs_info, folio);
+	const int start_bit = blocks_per_folio * btrfs_bitmap_nr_locked;
+	unsigned long flags;
+	bool last = false;
+	int cleared = 0;
+	int bit;
+
+	if (!btrfs_is_subpage(fs_info, folio)) {
+		folio_unlock(folio);
+		return;
+	}
+
+	if (atomic_read(&subpage->nr_locked) == 0) {
+		/* No subpage lock, locked by plain lock_page(). */
+		folio_unlock(folio);
+		return;
+	}
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	for_each_set_bit(bit, &bitmap, blocks_per_folio) {
+		if (test_and_clear_bit(bit + start_bit, subpage->bitmaps))
+			cleared++;
+	}
+	ASSERT(atomic_read(&subpage->nr_locked) >= cleared);
+	last = atomic_sub_and_test(cleared, &subpage->nr_locked);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+	if (last)
+		folio_unlock(folio);
+}
+
+#define subpage_test_bitmap_all_set(fs_info, folio, name)		\
+({									\
+	struct btrfs_subpage *subpage = folio_get_private(folio);	\
+	const unsigned int blocks_per_folio =				\
+				btrfs_blocks_per_folio(fs_info, folio); \
+									\
+	bitmap_test_range_all_set(subpage->bitmaps,			\
+			blocks_per_folio * btrfs_bitmap_nr_##name,	\
+			blocks_per_folio);				\
+})
+
+#define subpage_test_bitmap_all_zero(fs_info, folio, name)		\
+({									\
+	struct btrfs_subpage *subpage = folio_get_private(folio);	\
+	const unsigned int blocks_per_folio =				\
+				btrfs_blocks_per_folio(fs_info, folio); \
+									\
+	bitmap_test_range_all_zero(subpage->bitmaps,			\
+			blocks_per_folio * btrfs_bitmap_nr_##name,	\
+			blocks_per_folio);				\
+})
+
+void btrfs_subpage_set_uptodate(const struct btrfs_fs_info *fs_info,
+				struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							uptodate, start, len);
 	unsigned long flags;
 
 	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->uptodate_bitmap |= tmp;
-	if (subpage->uptodate_bitmap == U16_MAX)
-		SetPageUptodate(page);
+	bitmap_set(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	if (subpage_test_bitmap_all_set(fs_info, folio, uptodate))
+		folio_mark_uptodate(folio);
 	spin_unlock_irqrestore(&subpage->lock, flags);
 }
 
 void btrfs_subpage_clear_uptodate(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+				  struct folio *folio, u64 start, u32 len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	const u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							uptodate, start, len);
 	unsigned long flags;
 
 	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->uptodate_bitmap &= ~tmp;
-	ClearPageUptodate(page);
-	spin_unlock_irqrestore(&subpage->lock, flags);
-}
-
-void btrfs_subpage_set_error(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
-{
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	const u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
-	unsigned long flags;
-
-	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->error_bitmap |= tmp;
-	SetPageError(page);
-	spin_unlock_irqrestore(&subpage->lock, flags);
-}
-
-void btrfs_subpage_clear_error(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
-{
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	const u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
-	unsigned long flags;
-
-	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->error_bitmap &= ~tmp;
-	if (subpage->error_bitmap == 0)
-		ClearPageError(page);
+	bitmap_clear(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	folio_clear_uptodate(folio);
 	spin_unlock_irqrestore(&subpage->lock, flags);
 }
 
 void btrfs_subpage_set_dirty(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+			     struct folio *folio, u64 start, u32 len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							dirty, start, len);
 	unsigned long flags;
 
 	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->dirty_bitmap |= tmp;
+	bitmap_set(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
 	spin_unlock_irqrestore(&subpage->lock, flags);
-	set_page_dirty(page);
+	folio_mark_dirty(folio);
 }
 
 /*
@@ -302,55 +419,119 @@ void btrfs_subpage_set_dirty(const struct btrfs_fs_info *fs_info,
  * extra handling for tree blocks.
  */
 bool btrfs_subpage_clear_and_test_dirty(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+					struct folio *folio, u64 start, u32 len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							dirty, start, len);
 	unsigned long flags;
 	bool last = false;
 
 	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->dirty_bitmap &= ~tmp;
-	if (subpage->dirty_bitmap == 0)
+	bitmap_clear(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	if (subpage_test_bitmap_all_zero(fs_info, folio, dirty))
 		last = true;
 	spin_unlock_irqrestore(&subpage->lock, flags);
 	return last;
 }
 
 void btrfs_subpage_clear_dirty(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+			       struct folio *folio, u64 start, u32 len)
 {
 	bool last;
 
-	last = btrfs_subpage_clear_and_test_dirty(fs_info, page, start, len);
+	last = btrfs_subpage_clear_and_test_dirty(fs_info, folio, start, len);
 	if (last)
-		clear_page_dirty_for_io(page);
+		folio_clear_dirty_for_io(folio);
 }
 
 void btrfs_subpage_set_writeback(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+				 struct folio *folio, u64 start, u32 len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							writeback, start, len);
 	unsigned long flags;
 
 	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->writeback_bitmap |= tmp;
-	set_page_writeback(page);
+	bitmap_set(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	if (!folio_test_writeback(folio))
+		folio_start_writeback(folio);
 	spin_unlock_irqrestore(&subpage->lock, flags);
 }
 
 void btrfs_subpage_clear_writeback(const struct btrfs_fs_info *fs_info,
-		struct page *page, u64 start, u32 len)
+				   struct folio *folio, u64 start, u32 len)
 {
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private;
-	u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len);
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							writeback, start, len);
 	unsigned long flags;
 
 	spin_lock_irqsave(&subpage->lock, flags);
-	subpage->writeback_bitmap &= ~tmp;
-	if (subpage->writeback_bitmap == 0)
-		end_page_writeback(page);
+	bitmap_clear(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	if (subpage_test_bitmap_all_zero(fs_info, folio, writeback)) {
+		ASSERT(folio_test_writeback(folio));
+		folio_end_writeback(folio);
+	}
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}
+
+void btrfs_subpage_set_ordered(const struct btrfs_fs_info *fs_info,
+			       struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							ordered, start, len);
+	unsigned long flags;
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	bitmap_set(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	folio_set_ordered(folio);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}
+
+void btrfs_subpage_clear_ordered(const struct btrfs_fs_info *fs_info,
+				 struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							ordered, start, len);
+	unsigned long flags;
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	bitmap_clear(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	if (subpage_test_bitmap_all_zero(fs_info, folio, ordered))
+		folio_clear_ordered(folio);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}
+
+void btrfs_subpage_set_checked(const struct btrfs_fs_info *fs_info,
+			       struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							checked, start, len);
+	unsigned long flags;
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	bitmap_set(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	if (subpage_test_bitmap_all_set(fs_info, folio, checked))
+		folio_set_checked(folio);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}
+
+void btrfs_subpage_clear_checked(const struct btrfs_fs_info *fs_info,
+				 struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage = folio_get_private(folio);
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,
+							checked, start, len);
+	unsigned long flags;
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	bitmap_clear(subpage->bitmaps, start_bit, len >> fs_info->sectorsize_bits);
+	folio_clear_checked(folio);
 	spin_unlock_irqrestore(&subpage->lock, flags);
 }
 
@@ -360,59 +541,290 @@ void btrfs_subpage_clear_writeback(const struct btrfs_fs_info *fs_info,
  */
 #define IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(name)				\
 bool btrfs_subpage_test_##name(const struct btrfs_fs_info *fs_info,	\
-		struct page *page, u64 start, u32 len)			\
+			       struct folio *folio, u64 start, u32 len)	\
 {									\
-	struct btrfs_subpage *subpage = (struct btrfs_subpage *)page->private; \
-	const u16 tmp = btrfs_subpage_calc_bitmap(fs_info, page, start, len); \
+	struct btrfs_subpage *subpage = folio_get_private(folio);	\
+	unsigned int start_bit = subpage_calc_start_bit(fs_info, folio,	\
+						name, start, len);	\
 	unsigned long flags;						\
 	bool ret;							\
 									\
 	spin_lock_irqsave(&subpage->lock, flags);			\
-	ret = ((subpage->name##_bitmap & tmp) == tmp);			\
+	ret = bitmap_test_range_all_set(subpage->bitmaps, start_bit,	\
+				len >> fs_info->sectorsize_bits);	\
 	spin_unlock_irqrestore(&subpage->lock, flags);			\
 	return ret;							\
 }
 IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(uptodate);
-IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(error);
 IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(dirty);
 IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(writeback);
+IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(ordered);
+IMPLEMENT_BTRFS_SUBPAGE_TEST_OP(checked);
 
 /*
  * Note that, in selftests (extent-io-tests), we can have empty fs_info passed
  * in.  We only test sectorsize == PAGE_SIZE cases so far, thus we can fall
  * back to regular sectorsize branch.
  */
-#define IMPLEMENT_BTRFS_PAGE_OPS(name, set_page_func, clear_page_func,	\
-			       test_page_func)				\
-void btrfs_page_set_##name(const struct btrfs_fs_info *fs_info,		\
-		struct page *page, u64 start, u32 len)			\
+#define IMPLEMENT_BTRFS_PAGE_OPS(name, folio_set_func,			\
+				 folio_clear_func, folio_test_func)	\
+void btrfs_folio_set_##name(const struct btrfs_fs_info *fs_info,	\
+			    struct folio *folio, u64 start, u32 len)	\
 {									\
-	if (unlikely(!fs_info) || fs_info->sectorsize == PAGE_SIZE) {	\
-		set_page_func(page);					\
+	if (unlikely(!fs_info) ||					\
+	    !btrfs_is_subpage(fs_info, folio)) {			\
+		folio_set_func(folio);					\
 		return;							\
 	}								\
-	btrfs_subpage_set_##name(fs_info, page, start, len);		\
+	btrfs_subpage_set_##name(fs_info, folio, start, len);		\
 }									\
-void btrfs_page_clear_##name(const struct btrfs_fs_info *fs_info,	\
-		struct page *page, u64 start, u32 len)			\
+void btrfs_folio_clear_##name(const struct btrfs_fs_info *fs_info,	\
+			      struct folio *folio, u64 start, u32 len)	\
 {									\
-	if (unlikely(!fs_info) || fs_info->sectorsize == PAGE_SIZE) {	\
-		clear_page_func(page);					\
+	if (unlikely(!fs_info) ||					\
+	    !btrfs_is_subpage(fs_info, folio)) {			\
+		folio_clear_func(folio);				\
 		return;							\
 	}								\
-	btrfs_subpage_clear_##name(fs_info, page, start, len);		\
+	btrfs_subpage_clear_##name(fs_info, folio, start, len);		\
 }									\
-bool btrfs_page_test_##name(const struct btrfs_fs_info *fs_info,	\
-		struct page *page, u64 start, u32 len)			\
+bool btrfs_folio_test_##name(const struct btrfs_fs_info *fs_info,	\
+			     struct folio *folio, u64 start, u32 len)	\
 {									\
-	if (unlikely(!fs_info) || fs_info->sectorsize == PAGE_SIZE)	\
-		return test_page_func(page);				\
-	return btrfs_subpage_test_##name(fs_info, page, start, len);	\
+	if (unlikely(!fs_info) ||					\
+	    !btrfs_is_subpage(fs_info, folio))				\
+		return folio_test_func(folio);				\
+	return btrfs_subpage_test_##name(fs_info, folio, start, len);	\
+}									\
+void btrfs_folio_clamp_set_##name(const struct btrfs_fs_info *fs_info,	\
+				  struct folio *folio, u64 start, u32 len) \
+{									\
+	if (unlikely(!fs_info) ||					\
+	    !btrfs_is_subpage(fs_info, folio)) {			\
+		folio_set_func(folio);					\
+		return;							\
+	}								\
+	btrfs_subpage_clamp_range(folio, &start, &len);			\
+	btrfs_subpage_set_##name(fs_info, folio, start, len);		\
+}									\
+void btrfs_folio_clamp_clear_##name(const struct btrfs_fs_info *fs_info, \
+				    struct folio *folio, u64 start, u32 len) \
+{									\
+	if (unlikely(!fs_info) ||					\
+	    !btrfs_is_subpage(fs_info, folio)) {			\
+		folio_clear_func(folio);				\
+		return;							\
+	}								\
+	btrfs_subpage_clamp_range(folio, &start, &len);			\
+	btrfs_subpage_clear_##name(fs_info, folio, start, len);		\
+}									\
+bool btrfs_folio_clamp_test_##name(const struct btrfs_fs_info *fs_info,	\
+				   struct folio *folio, u64 start, u32 len) \
+{									\
+	if (unlikely(!fs_info) ||					\
+	    !btrfs_is_subpage(fs_info, folio))				\
+		return folio_test_func(folio);				\
+	btrfs_subpage_clamp_range(folio, &start, &len);			\
+	return btrfs_subpage_test_##name(fs_info, folio, start, len);	\
+}									\
+void btrfs_meta_folio_set_##name(struct folio *folio, const struct extent_buffer *eb) \
+{									\
+	if (!btrfs_meta_is_subpage(eb->fs_info)) {			\
+		folio_set_func(folio);					\
+		return;							\
+	}								\
+	btrfs_subpage_set_##name(eb->fs_info, folio, eb->start, eb->len); \
+}									\
+void btrfs_meta_folio_clear_##name(struct folio *folio, const struct extent_buffer *eb) \
+{									\
+	if (!btrfs_meta_is_subpage(eb->fs_info)) {			\
+		folio_clear_func(folio);				\
+		return;							\
+	}								\
+	btrfs_subpage_clear_##name(eb->fs_info, folio, eb->start, eb->len); \
+}									\
+bool btrfs_meta_folio_test_##name(struct folio *folio, const struct extent_buffer *eb) \
+{									\
+	if (!btrfs_meta_is_subpage(eb->fs_info))			\
+		return folio_test_func(folio);				\
+	return btrfs_subpage_test_##name(eb->fs_info, folio, eb->start, eb->len); \
 }
-IMPLEMENT_BTRFS_PAGE_OPS(uptodate, SetPageUptodate, ClearPageUptodate,
-			 PageUptodate);
-IMPLEMENT_BTRFS_PAGE_OPS(error, SetPageError, ClearPageError, PageError);
-IMPLEMENT_BTRFS_PAGE_OPS(dirty, set_page_dirty, clear_page_dirty_for_io,
-			 PageDirty);
-IMPLEMENT_BTRFS_PAGE_OPS(writeback, set_page_writeback, end_page_writeback,
-			 PageWriteback);
+IMPLEMENT_BTRFS_PAGE_OPS(uptodate, folio_mark_uptodate, folio_clear_uptodate,
+			 folio_test_uptodate);
+IMPLEMENT_BTRFS_PAGE_OPS(dirty, folio_mark_dirty, folio_clear_dirty_for_io,
+			 folio_test_dirty);
+IMPLEMENT_BTRFS_PAGE_OPS(writeback, folio_start_writeback, folio_end_writeback,
+			 folio_test_writeback);
+IMPLEMENT_BTRFS_PAGE_OPS(ordered, folio_set_ordered, folio_clear_ordered,
+			 folio_test_ordered);
+IMPLEMENT_BTRFS_PAGE_OPS(checked, folio_set_checked, folio_clear_checked,
+			 folio_test_checked);
+
+#define GET_SUBPAGE_BITMAP(fs_info, folio, name, dst)			\
+{									\
+	const unsigned int blocks_per_folio =				\
+				btrfs_blocks_per_folio(fs_info, folio);	\
+	const struct btrfs_subpage *subpage = folio_get_private(folio);	\
+									\
+	ASSERT(blocks_per_folio <= BITS_PER_LONG);			\
+	*dst = bitmap_read(subpage->bitmaps,				\
+			   blocks_per_folio * btrfs_bitmap_nr_##name,	\
+			   blocks_per_folio);				\
+}
+
+#define SUBPAGE_DUMP_BITMAP(fs_info, folio, name, start, len)		\
+{									\
+	unsigned long bitmap;						\
+	const unsigned int blocks_per_folio =				\
+				btrfs_blocks_per_folio(fs_info, folio);	\
+									\
+	GET_SUBPAGE_BITMAP(fs_info, folio, name, &bitmap);		\
+	btrfs_warn(fs_info,						\
+	"dumpping bitmap start=%llu len=%u folio=%llu " #name "_bitmap=%*pbl", \
+		   start, len, folio_pos(folio),			\
+		   blocks_per_folio, &bitmap);				\
+}
+
+/*
+ * Make sure not only the page dirty bit is cleared, but also subpage dirty bit
+ * is cleared.
+ */
+void btrfs_folio_assert_not_dirty(const struct btrfs_fs_info *fs_info,
+				  struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage;
+	unsigned int start_bit;
+	unsigned int nbits;
+	unsigned long flags;
+
+	if (!IS_ENABLED(CONFIG_BTRFS_ASSERT))
+		return;
+
+	if (!btrfs_is_subpage(fs_info, folio)) {
+		ASSERT(!folio_test_dirty(folio));
+		return;
+	}
+
+	start_bit = subpage_calc_start_bit(fs_info, folio, dirty, start, len);
+	nbits = len >> fs_info->sectorsize_bits;
+	subpage = folio_get_private(folio);
+	ASSERT(subpage);
+	spin_lock_irqsave(&subpage->lock, flags);
+	if (unlikely(!bitmap_test_range_all_zero(subpage->bitmaps, start_bit, nbits))) {
+		SUBPAGE_DUMP_BITMAP(fs_info, folio, dirty, start, len);
+		ASSERT(bitmap_test_range_all_zero(subpage->bitmaps, start_bit, nbits));
+	}
+	ASSERT(bitmap_test_range_all_zero(subpage->bitmaps, start_bit, nbits));
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}
+
+/*
+ * This is for folio already locked by plain lock_page()/folio_lock(), which
+ * doesn't have any subpage awareness.
+ *
+ * This populates the involved subpage ranges so that subpage helpers can
+ * properly unlock them.
+ */
+void btrfs_folio_set_lock(const struct btrfs_fs_info *fs_info,
+			  struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage;
+	unsigned long flags;
+	unsigned int start_bit;
+	unsigned int nbits;
+	int ret;
+
+	ASSERT(folio_test_locked(folio));
+	if (unlikely(!fs_info) || !btrfs_is_subpage(fs_info, folio))
+		return;
+
+	subpage = folio_get_private(folio);
+	start_bit = subpage_calc_start_bit(fs_info, folio, locked, start, len);
+	nbits = len >> fs_info->sectorsize_bits;
+	spin_lock_irqsave(&subpage->lock, flags);
+	/* Target range should not yet be locked. */
+	if (unlikely(!bitmap_test_range_all_zero(subpage->bitmaps, start_bit, nbits))) {
+		SUBPAGE_DUMP_BITMAP(fs_info, folio, locked, start, len);
+		ASSERT(bitmap_test_range_all_zero(subpage->bitmaps, start_bit, nbits));
+	}
+	bitmap_set(subpage->bitmaps, start_bit, nbits);
+	ret = atomic_add_return(nbits, &subpage->nr_locked);
+	ASSERT(ret <= btrfs_blocks_per_folio(fs_info, folio));
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}
+
+/*
+ * Clear the dirty flag for the folio.
+ *
+ * If the affected folio is no longer dirty, return true. Otherwise return false.
+ */
+bool btrfs_meta_folio_clear_and_test_dirty(struct folio *folio, const struct extent_buffer *eb)
+{
+	bool last;
+
+	if (!btrfs_meta_is_subpage(eb->fs_info)) {
+		folio_clear_dirty_for_io(folio);
+		return true;
+	}
+
+	last = btrfs_subpage_clear_and_test_dirty(eb->fs_info, folio, eb->start, eb->len);
+	if (last) {
+		folio_clear_dirty_for_io(folio);
+		return true;
+	}
+	return false;
+}
+
+void __cold btrfs_subpage_dump_bitmap(const struct btrfs_fs_info *fs_info,
+				      struct folio *folio, u64 start, u32 len)
+{
+	struct btrfs_subpage *subpage;
+	const unsigned int blocks_per_folio = btrfs_blocks_per_folio(fs_info, folio);
+	unsigned long uptodate_bitmap;
+	unsigned long dirty_bitmap;
+	unsigned long writeback_bitmap;
+	unsigned long ordered_bitmap;
+	unsigned long checked_bitmap;
+	unsigned long locked_bitmap;
+	unsigned long flags;
+
+	ASSERT(folio_test_private(folio) && folio_get_private(folio));
+	ASSERT(blocks_per_folio > 1);
+	subpage = folio_get_private(folio);
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	GET_SUBPAGE_BITMAP(fs_info, folio, uptodate, &uptodate_bitmap);
+	GET_SUBPAGE_BITMAP(fs_info, folio, dirty, &dirty_bitmap);
+	GET_SUBPAGE_BITMAP(fs_info, folio, writeback, &writeback_bitmap);
+	GET_SUBPAGE_BITMAP(fs_info, folio, ordered, &ordered_bitmap);
+	GET_SUBPAGE_BITMAP(fs_info, folio, checked, &checked_bitmap);
+	GET_SUBPAGE_BITMAP(fs_info, folio, locked, &locked_bitmap);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+
+	dump_page(folio_page(folio, 0), "btrfs subpage dump");
+	btrfs_warn(fs_info,
+"start=%llu len=%u page=%llu, bitmaps uptodate=%*pbl dirty=%*pbl locked=%*pbl writeback=%*pbl ordered=%*pbl checked=%*pbl",
+		    start, len, folio_pos(folio),
+		    blocks_per_folio, &uptodate_bitmap,
+		    blocks_per_folio, &dirty_bitmap,
+		    blocks_per_folio, &locked_bitmap,
+		    blocks_per_folio, &writeback_bitmap,
+		    blocks_per_folio, &ordered_bitmap,
+		    blocks_per_folio, &checked_bitmap);
+}
+
+void btrfs_get_subpage_dirty_bitmap(struct btrfs_fs_info *fs_info,
+				    struct folio *folio,
+				    unsigned long *ret_bitmap)
+{
+	struct btrfs_subpage *subpage;
+	unsigned long flags;
+
+	ASSERT(folio_test_private(folio) && folio_get_private(folio));
+	ASSERT(btrfs_blocks_per_folio(fs_info, folio) > 1);
+	subpage = folio_get_private(folio);
+
+	spin_lock_irqsave(&subpage->lock, flags);
+	GET_SUBPAGE_BITMAP(fs_info, folio, dirty, ret_bitmap);
+	spin_unlock_irqrestore(&subpage->lock, flags);
+}

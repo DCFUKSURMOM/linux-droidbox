@@ -9,10 +9,12 @@
 #include <linux/compiler.h>
 
 extern int verbose;
+extern int debug_kmaps;
 extern int debug_peo_args;
 extern bool quiet, dump_trace;
 extern int debug_ordered_events;
 extern int debug_data_convert;
+extern int debug_type_profile;
 
 #ifndef pr_fmt
 #define pr_fmt(fmt) fmt
@@ -22,6 +24,13 @@ extern int debug_data_convert;
 	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_warning(fmt, ...) \
 	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
+#define pr_warning_once(fmt, ...) ({		\
+	static int __warned;			\
+	if (unlikely(!__warned)) {		\
+		pr_warning(fmt, ##__VA_ARGS__); \
+		__warned = 1;			\
+	}					\
+})
 #define pr_info(fmt, ...) \
 	eprintf(0, verbose, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debug(fmt, ...) \
@@ -55,6 +64,13 @@ void trace_event(union perf_event *event);
 
 int ui__error(const char *format, ...) __printf(1, 2);
 int ui__warning(const char *format, ...) __printf(1, 2);
+#define ui__warning_once(format, ...) ({		\
+	static int __warned;				\
+	if (unlikely(!__warned)) {			\
+		ui__warning(format, ##__VA_ARGS__);	\
+		__warned = 1;				\
+	}						\
+})
 
 void pr_stat(const char *fmt, ...);
 
@@ -63,6 +79,7 @@ int eprintf_time(int level, int var, u64 t, const char *fmt, ...) __printf(4, 5)
 int veprintf(int level, int var, const char *fmt, va_list args);
 
 int perf_debug_option(const char *str);
+FILE *debug_file(void);
 void debug_set_file(FILE *file);
 void debug_set_display_time(bool set);
 void perf_debug_setup(void);

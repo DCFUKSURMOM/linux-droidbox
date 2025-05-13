@@ -2,13 +2,13 @@
 /*
  * Copyright IBM Corp. 2007,2012
  *
- * Author(s): Heiko Carstens <heiko.carstens@de.ibm.com>,
- *	      Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
+ * Author(s): Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
  */
 
 #define KMSG_COMPONENT "sclp_cmd"
 #define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
+#include <linux/cpufeature.h>
 #include <linux/completion.h>
 #include <linux/init.h>
 #include <linux/errno.h>
@@ -19,17 +19,21 @@
 #include <linux/mm.h>
 #include <linux/mmzone.h>
 #include <linux/memory.h>
+#include <linux/memory_hotplug.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
-#include <asm/ctl_reg.h>
+#include <asm/ctlreg.h>
 #include <asm/chpid.h>
 #include <asm/setup.h>
 #include <asm/page.h>
 #include <asm/sclp.h>
 #include <asm/numa.h>
 #include <asm/facility.h>
+#include <asm/page-states.h>
 
 #include "sclp.h"
+
+#define SCLP_CMDW_ASSIGN_STORAGE	0x000d0001
+#define SCLP_CMDW_UNASSIGN_STORAGE	0x000c0001
 
 static void sclp_sync_callback(struct sclp_req *req, void *data)
 {
@@ -168,7 +172,6 @@ static DEFINE_MUTEX(sclp_mem_mutex);
 static LIST_HEAD(sclp_mem_list);
 static u8 sclp_max_storage_id;
 static DECLARE_BITMAP(sclp_storage_ids, 256);
-static int sclp_mem_state_changed;
 
 struct memory_increment {
 	struct list_head list;
@@ -226,7 +229,7 @@ static int sclp_assign_storage(u16 rn)
 	unsigned long long start;
 	int rc;
 
-	rc = do_assign_storage(0x000d0001, rn);
+	rc = do_assign_storage(SCLP_CMDW_ASSIGN_STORAGE, rn);
 	if (rc)
 		return rc;
 	start = rn2addr(rn);
@@ -236,7 +239,7 @@ static int sclp_assign_storage(u16 rn)
 
 static int sclp_unassign_storage(u16 rn)
 {
-	return do_assign_storage(0x000c0001, rn);
+	return do_assign_storage(SCLP_CMDW_UNASSIGN_STORAGE, rn);
 }
 
 struct attach_storage_sccb {
@@ -244,7 +247,7 @@ struct attach_storage_sccb {
 	u16 :16;
 	u16 assigned;
 	u32 :32;
-	u32 entries[0];
+	u32 entries[];
 } __packed;
 
 static int sclp_attach_storage(u8 id)
@@ -343,24 +346,43 @@ static int sclp_mem_notifier(struct notifier_block *nb,
 		if (contains_standby_increment(start, start + size))
 			rc = -EPERM;
 		break;
-	case MEM_ONLINE:
-	case MEM_CANCEL_OFFLINE:
-		break;
-	case MEM_GOING_ONLINE:
+	case MEM_PREPARE_ONLINE:
+		/*
+		 * Access the altmap_start_pfn and altmap_nr_pages fields
+		 * within the struct memory_notify specifically when dealing
+		 * with only MEM_PREPARE_ONLINE/MEM_FINISH_OFFLINE notifiers.
+		 *
+		 * When altmap is in use, take the specified memory range
+		 * online, which includes the altmap.
+		 */
+		if (arg->altmap_nr_pages) {
+			start = PFN_PHYS(arg->altmap_start_pfn);
+			size += PFN_PHYS(arg->altmap_nr_pages);
+		}
 		rc = sclp_mem_change_state(start, size, 1);
+		if (rc || !arg->altmap_nr_pages)
+			break;
+		/*
+		 * Set CMMA state to nodat here, since the struct page memory
+		 * at the beginning of the memory block will not go through the
+		 * buddy allocator later.
+		 */
+		__arch_set_page_nodat((void *)__va(start), arg->altmap_nr_pages);
 		break;
-	case MEM_CANCEL_ONLINE:
-		sclp_mem_change_state(start, size, 0);
-		break;
-	case MEM_OFFLINE:
+	case MEM_FINISH_OFFLINE:
+		/*
+		 * When altmap is in use, take the specified memory range
+		 * offline, which includes the altmap.
+		 */
+		if (arg->altmap_nr_pages) {
+			start = PFN_PHYS(arg->altmap_start_pfn);
+			size += PFN_PHYS(arg->altmap_nr_pages);
+		}
 		sclp_mem_change_state(start, size, 0);
 		break;
 	default:
-		rc = -EINVAL;
 		break;
 	}
-	if (!rc)
-		sclp_mem_state_changed = 1;
 	mutex_unlock(&sclp_mem_mutex);
 	return rc ? NOTIFY_BAD : NOTIFY_OK;
 }
@@ -397,10 +419,6 @@ static void __init add_memory_merged(u16 rn)
 		goto skip_add;
 	start = rn2addr(first_rn);
 	size = (unsigned long long) num * sclp.rzm;
-	if (start >= VMEM_MAX_PHYS)
-		goto skip_add;
-	if (start + size > VMEM_MAX_PHYS)
-		size = VMEM_MAX_PHYS - start;
 	if (start >= ident_map_size)
 		goto skip_add;
 	if (start + size > ident_map_size)
@@ -410,7 +428,9 @@ static void __init add_memory_merged(u16 rn)
 	if (!size)
 		goto skip_add;
 	for (addr = start; addr < start + size; addr += block_size)
-		add_memory(0, addr, block_size, MHP_NONE);
+		add_memory(0, addr, block_size,
+			   cpu_has_edat1() ?
+			   MHP_MEMMAP_ON_MEMORY | MHP_OFFLINE_INACCESSIBLE : MHP_NONE);
 skip_add:
 	first_rn = rn;
 	num = 1;
@@ -456,32 +476,12 @@ static void __init insert_increment(u16 rn, int standby, int assigned)
 	list_add(&new_incr->list, prev);
 }
 
-static int sclp_mem_freeze(struct device *dev)
-{
-	if (!sclp_mem_state_changed)
-		return 0;
-	pr_err("Memory hotplug state changed, suspend refused.\n");
-	return -EPERM;
-}
-
-static const struct dev_pm_ops sclp_mem_pm_ops = {
-	.freeze		= sclp_mem_freeze,
-};
-
-static struct platform_driver sclp_mem_pdrv = {
-	.driver = {
-		.name	= "sclp_mem",
-		.pm	= &sclp_mem_pm_ops,
-	},
-};
-
 static int __init sclp_detect_standby_memory(void)
 {
-	struct platform_device *sclp_pdev;
 	struct read_storage_sccb *sccb;
 	int i, id, assigned, rc;
 
-	if (OLDMEM_BASE) /* No standby memory in kdump mode */
+	if (oldmem_data.start) /* No standby memory in kdump mode */
 		return 0;
 	if ((sclp.facilities & 0xe00000000000ULL) != 0xe00000000000ULL)
 		return 0;
@@ -530,17 +530,7 @@ static int __init sclp_detect_standby_memory(void)
 	rc = register_memory_notifier(&sclp_mem_nb);
 	if (rc)
 		goto out;
-	rc = platform_driver_register(&sclp_mem_pdrv);
-	if (rc)
-		goto out;
-	sclp_pdev = platform_device_register_simple("sclp_mem", -1, NULL, 0);
-	rc = PTR_ERR_OR_ZERO(sclp_pdev);
-	if (rc)
-		goto out_driver;
 	sclp_add_standby_memory();
-	goto out;
-out_driver:
-	platform_driver_unregister(&sclp_mem_pdrv);
 out:
 	free_page((unsigned long) sccb);
 	return rc;

@@ -22,6 +22,9 @@
 
 #ifndef __AMD_ASIC_TYPE_H__
 #define __AMD_ASIC_TYPE_H__
+
+#include <linux/types.h>
+
 /*
  * Supported ASIC types
  */
@@ -53,15 +56,24 @@ enum amd_asic_type {
 	CHIP_RENOIR,	/* 24 */
 	CHIP_ALDEBARAN, /* 25 */
 	CHIP_NAVI10,	/* 26 */
-	CHIP_NAVI14,	/* 27 */
-	CHIP_NAVI12,	/* 28 */
-	CHIP_SIENNA_CICHLID,	/* 29 */
-	CHIP_NAVY_FLOUNDER,	/* 30 */
-	CHIP_VANGOGH,	/* 31 */
-	CHIP_DIMGREY_CAVEFISH,	/* 32 */
+	CHIP_CYAN_SKILLFISH,	/* 27 */
+	CHIP_NAVI14,	/* 28 */
+	CHIP_NAVI12,	/* 29 */
+	CHIP_SIENNA_CICHLID,	/* 30 */
+	CHIP_NAVY_FLOUNDER,	/* 31 */
+	CHIP_VANGOGH,	/* 32 */
+	CHIP_DIMGREY_CAVEFISH,	/* 33 */
+	CHIP_BEIGE_GOBY,	/* 34 */
+	CHIP_YELLOW_CARP,	/* 35 */
+	CHIP_IP_DISCOVERY,	/* 36 */
 	CHIP_LAST,
 };
 
 extern const char *amdgpu_asic_name[];
 
+struct amdgpu_asic_type_quirk {
+	unsigned short device;	/* PCI device ID */
+	u8 revision;	/* revision ID */
+	unsigned short type;	/* real ASIC type */
+};
 #endif /*__AMD_ASIC_TYPE_H__ */

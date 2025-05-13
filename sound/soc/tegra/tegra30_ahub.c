@@ -40,7 +40,7 @@ static inline void tegra30_audio_write(u32 reg, u32 val)
 	regmap_write(ahub->regmap_ahub, reg, val);
 }
 
-static __maybe_unused int tegra30_ahub_runtime_suspend(struct device *dev)
+static int tegra30_ahub_runtime_suspend(struct device *dev)
 {
 	regcache_cache_only(ahub->regmap_apbif, true);
 	regcache_cache_only(ahub->regmap_ahub, true);
@@ -61,7 +61,7 @@ static __maybe_unused int tegra30_ahub_runtime_suspend(struct device *dev)
  * stopping streams should dynamically adjust the clock as required.  However,
  * this is not yet implemented.
  */
-static __maybe_unused int tegra30_ahub_runtime_resume(struct device *dev)
+static int tegra30_ahub_runtime_resume(struct device *dev)
 {
 	int ret;
 
@@ -512,16 +512,14 @@ static const struct of_device_id tegra30_ahub_of_match[] = {
 
 static int tegra30_ahub_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match;
 	const struct tegra30_ahub_soc_data *soc_data;
 	struct resource *res0;
 	void __iomem *regs_apbif, *regs_ahub;
 	int ret = 0;
 
-	match = of_match_device(tegra30_ahub_of_match, &pdev->dev);
-	if (!match)
+	soc_data = of_device_get_match_data(&pdev->dev);
+	if (!soc_data)
 		return -EINVAL;
-	soc_data = match->data;
 
 	ahub = devm_kzalloc(&pdev->dev, sizeof(struct tegra30_ahub),
 			    GFP_KERNEL);
@@ -550,8 +548,7 @@ static int tegra30_ahub_probe(struct platform_device *pdev)
 		goto err_unset_ahub;
 	}
 
-	res0 = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	regs_apbif = devm_ioremap_resource(&pdev->dev, res0);
+	regs_apbif = devm_platform_get_and_ioremap_resource(pdev, 0, &res0);
 	if (IS_ERR(regs_apbif)) {
 		ret = PTR_ERR(regs_apbif);
 		goto err_unset_ahub;
@@ -595,20 +592,17 @@ err_unset_ahub:
 	return ret;
 }
 
-static int tegra30_ahub_remove(struct platform_device *pdev)
+static void tegra30_ahub_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
 
 	ahub = NULL;
-
-	return 0;
 }
 
 static const struct dev_pm_ops tegra30_ahub_pm_ops = {
-	SET_RUNTIME_PM_OPS(tegra30_ahub_runtime_suspend,
-			   tegra30_ahub_runtime_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	RUNTIME_PM_OPS(tegra30_ahub_runtime_suspend,
+		       tegra30_ahub_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 static struct platform_driver tegra30_ahub_driver = {
@@ -617,7 +611,7 @@ static struct platform_driver tegra30_ahub_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = tegra30_ahub_of_match,
-		.pm = &tegra30_ahub_pm_ops,
+		.pm = pm_ptr(&tegra30_ahub_pm_ops),
 	},
 };
 module_platform_driver(tegra30_ahub_driver);

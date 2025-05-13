@@ -22,7 +22,7 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/device.h>
-#include <linux/input/cyttsp.h>
+#include <linux/regulator/consumer.h>
 
 #define CY_NUM_RETRY		16 /* max number of retries for read ops */
 
@@ -136,10 +136,6 @@ struct cyttsp {
 struct cyttsp *cyttsp_probe(const struct cyttsp_bus_ops *bus_ops,
 			    struct device *dev, int irq, size_t xfer_buf_size);
 
-int cyttsp_i2c_write_block_data(struct device *dev, u8 *xfer_buf, u16 addr,
-		u8 length, const void *values);
-int cyttsp_i2c_read_block_data(struct device *dev, u8 *xfer_buf, u16 addr,
-		u8 length, void *values);
 extern const struct dev_pm_ops cyttsp_pm_ops;
 
 #endif /* __CYTTSP_CORE_H__ */

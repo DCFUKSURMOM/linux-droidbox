@@ -5,7 +5,7 @@
  * Copyright (C) 2017 Tony Lindgren <tony@atomide.com>
  *
  * Rewritten for Linux power framework with some parts based on
- * on earlier driver found in the Motorola Linux kernel:
+ * earlier driver found in the Motorola Linux kernel:
  *
  * Copyright (C) 2009-2010 Motorola, Inc.
  */
@@ -14,11 +14,11 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
-#include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
@@ -172,23 +172,6 @@ static enum power_supply_property cpcap_charger_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 };
-
-/* No battery always shows temperature of -40000 */
-static bool cpcap_charger_battery_found(struct cpcap_charger_ddata *ddata)
-{
-	struct iio_channel *channel;
-	int error, temperature;
-
-	channel = ddata->channels[CPCAP_CHARGER_IIO_BATTDET];
-	error = iio_read_channel_processed(channel, &temperature);
-	if (error < 0) {
-		dev_warn(ddata->dev, "%s failed: %i\n", __func__, error);
-
-		return false;
-	}
-
-	return temperature > -20000 && temperature < 60000;
-}
 
 static int cpcap_charger_get_charge_voltage(struct cpcap_charger_ddata *ddata)
 {
@@ -533,7 +516,7 @@ static void cpcap_charger_vbus_work(struct work_struct *work)
 out_err:
 	cpcap_charger_update_state(ddata, POWER_SUPPLY_STATUS_UNKNOWN);
 	dev_err(ddata->dev, "%s could not %s vbus: %i\n", __func__,
-		ddata->vbus_enabled ? "enable" : "disable", error);
+		str_enable_disable(ddata->vbus_enabled), error);
 }
 
 static int cpcap_charger_set_vbus(struct phy_companion *comparator,
@@ -700,11 +683,29 @@ static void cpcap_usb_detect(struct work_struct *work)
 
 	if (!ddata->feeding_vbus && cpcap_charger_vbus_valid(ddata) &&
 	    s.chrgcurr1) {
-		int max_current = 532000;
+		int max_current;
 		int vchrg, ichrg;
+		union power_supply_propval val;
+		struct power_supply *battery;
 
-		if (cpcap_charger_battery_found(ddata))
+		battery = power_supply_get_by_name("battery");
+		if (IS_ERR_OR_NULL(battery)) {
+			dev_err(ddata->dev, "battery power_supply not available %li\n",
+					PTR_ERR(battery));
+			return;
+		}
+
+		error = power_supply_get_property(battery, POWER_SUPPLY_PROP_PRESENT, &val);
+		power_supply_put(battery);
+		if (error)
+			goto out_err;
+
+		if (val.intval) {
 			max_current = 1596000;
+		} else {
+			dev_info(ddata->dev, "battery not inserted, charging disabled\n");
+			max_current = 0;
+		}
 
 		if (max_current > ddata->limit_current)
 			max_current = ddata->limit_current;
@@ -864,7 +865,6 @@ static const struct power_supply_desc cpcap_charger_usb_desc = {
 	.property_is_writeable = cpcap_charger_property_is_writeable,
 };
 
-#ifdef CONFIG_OF
 static const struct of_device_id cpcap_charger_id_table[] = {
 	{
 		.compatible = "motorola,mapphone-cpcap-charger",
@@ -872,19 +872,12 @@ static const struct of_device_id cpcap_charger_id_table[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(of, cpcap_charger_id_table);
-#endif
 
 static int cpcap_charger_probe(struct platform_device *pdev)
 {
 	struct cpcap_charger_ddata *ddata;
-	const struct of_device_id *of_id;
 	struct power_supply_config psy_cfg = {};
 	int error;
-
-	of_id = of_match_device(of_match_ptr(cpcap_charger_id_table),
-				&pdev->dev);
-	if (!of_id)
-		return -EINVAL;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
@@ -909,10 +902,10 @@ static int cpcap_charger_probe(struct platform_device *pdev)
 
 	atomic_set(&ddata->active, 1);
 
-	psy_cfg.of_node = pdev->dev.of_node;
+	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
 	psy_cfg.drv_data = ddata;
 	psy_cfg.supplied_to = cpcap_charger_supplied_to;
-	psy_cfg.num_supplicants = ARRAY_SIZE(cpcap_charger_supplied_to),
+	psy_cfg.num_supplicants = ARRAY_SIZE(cpcap_charger_supplied_to);
 
 	ddata->usb = devm_power_supply_register(ddata->dev,
 						&cpcap_charger_usb_desc,
@@ -965,21 +958,19 @@ static void cpcap_charger_shutdown(struct platform_device *pdev)
 	cancel_delayed_work_sync(&ddata->detect_work);
 }
 
-static int cpcap_charger_remove(struct platform_device *pdev)
+static void cpcap_charger_remove(struct platform_device *pdev)
 {
 	cpcap_charger_shutdown(pdev);
-
-	return 0;
 }
 
 static struct platform_driver cpcap_charger_driver = {
 	.probe = cpcap_charger_probe,
 	.driver	= {
 		.name	= "cpcap-charger",
-		.of_match_table = of_match_ptr(cpcap_charger_id_table),
+		.of_match_table = cpcap_charger_id_table,
 	},
 	.shutdown = cpcap_charger_shutdown,
-	.remove	= cpcap_charger_remove,
+	.remove = cpcap_charger_remove,
 };
 module_platform_driver(cpcap_charger_driver);
 

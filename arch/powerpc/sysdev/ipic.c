@@ -18,9 +18,10 @@
 #include <linux/device.h>
 #include <linux/spinlock.h>
 #include <linux/fsl_devices.h>
+#include <linux/irqdomain.h>
+#include <linux/of_address.h>
 #include <asm/irq.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/ipic.h>
 
 #include "ipic.h"
@@ -756,18 +757,17 @@ struct ipic * __init ipic_init(struct device_node *node, unsigned int flags)
 	ipic_write(ipic->regs, IPIC_SEMSR, temp);
 
 	primary_ipic = ipic;
-	irq_set_default_host(primary_ipic->irqhost);
+	irq_set_default_domain(primary_ipic->irqhost);
 
 	ipic_write(ipic->regs, IPIC_SIMSR_H, 0);
 	ipic_write(ipic->regs, IPIC_SIMSR_L, 0);
 
-	printk ("IPIC (%d IRQ sources) at %p\n", NR_IPIC_INTS,
-			primary_ipic->regs);
+	pr_info("IPIC (%d IRQ sources) at MMIO %pa\n", NR_IPIC_INTS, &res.start);
 
 	return ipic;
 }
 
-void ipic_set_default_priority(void)
+void __init ipic_set_default_priority(void)
 {
 	ipic_write(primary_ipic->regs, IPIC_SIPRR_A, IPIC_PRIORITY_DEFAULT);
 	ipic_write(primary_ipic->regs, IPIC_SIPRR_B, IPIC_PRIORITY_DEFAULT);

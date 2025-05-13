@@ -23,7 +23,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 /* Commands */
 #define ADS131E08_CMD_RESET		0x06
@@ -102,10 +102,10 @@ struct ads131e08_state {
 	struct completion completion;
 	struct {
 		u8 data[ADS131E08_NUM_DATA_BYTES_MAX];
-		s64 ts __aligned(8);
+		aligned_s64 ts;
 	} tmp_buf;
 
-	u8 tx_buf[3] ____cacheline_aligned;
+	u8 tx_buf[3] __aligned(IIO_DMA_MINALIGN);
 	/*
 	 * Add extra one padding byte to be able to access the last channel
 	 * value using u32 pointer
@@ -505,12 +505,11 @@ static int ads131e08_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		ret = ads131e08_read_direct(indio_dev, channel, value);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		if (ret)
 			return ret;
 
@@ -551,12 +550,11 @@ static int ads131e08_write_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (!iio_device_claim_direct(indio_dev))
+			return -EBUSY;
 
 		ret = ads131e08_set_data_rate(st, value);
-		iio_device_release_direct_mode(indio_dev);
+		iio_device_release_direct(indio_dev);
 		return ret;
 
 	default:
@@ -637,7 +635,7 @@ static irqreturn_t ads131e08_trigger_handler(int irq, void *private)
 	if (ret)
 		goto out;
 
-	for_each_set_bit(chn, indio_dev->active_scan_mask, indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, chn) {
 		src = st->rx_buf + ADS131E08_NUM_STATUS_BYTES + chn * num_bytes;
 		dest = st->tmp_buf.data + i * ADS131E08_NUM_STORAGE_BYTES;
 
@@ -694,7 +692,6 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 	struct ads131e08_channel_config *channel_config;
 	struct device *dev = &st->spi->dev;
 	struct iio_chan_spec *channels;
-	struct fwnode_handle *node;
 	unsigned int channel, tmp;
 	int num_channels, i, ret;
 
@@ -736,7 +733,7 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 		return -ENOMEM;
 
 	i = 0;
-	device_for_each_child_node(dev, node) {
+	device_for_each_child_node_scoped(dev, node) {
 		ret = fwnode_property_read_u32(node, "reg", &channel);
 		if (ret)
 			return ret;
@@ -784,6 +781,7 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 	st->channel_config = channel_config;
 
 	return 0;
+
 }
 
 static void ads131e08_regulator_disable(void *data)
@@ -791,13 +789,6 @@ static void ads131e08_regulator_disable(void *data)
 	struct ads131e08_state *st = data;
 
 	regulator_disable(st->vref_reg);
-}
-
-static void ads131e08_clk_disable(void *data)
-{
-	struct ads131e08_state *st = data;
-
-	clk_disable_unprepare(st->adc_clk);
 }
 
 static int ads131e08_probe(struct spi_device *spi)
@@ -809,7 +800,7 @@ static int ads131e08_probe(struct spi_device *spi)
 	unsigned long adc_clk_ns;
 	int ret;
 
-	info = device_get_match_data(&spi->dev);
+	info = spi_get_device_match_data(spi);
 	if (!info) {
 		dev_err(&spi->dev, "failed to get match data\n");
 		return -ENODEV;
@@ -830,7 +821,6 @@ static int ads131e08_probe(struct spi_device *spi)
 		return ret;
 
 	indio_dev->name = st->info->name;
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->info = &ads131e08_iio_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
@@ -850,7 +840,7 @@ static int ads131e08_probe(struct spi_device *spi)
 	}
 
 	st->trig = devm_iio_trigger_alloc(&spi->dev, "%s-dev%d",
-		indio_dev->name, indio_dev->id);
+		indio_dev->name, iio_device_id(indio_dev));
 	if (!st->trig) {
 		dev_err(&spi->dev, "failed to allocate IIO trigger\n");
 		return -ENOMEM;
@@ -893,20 +883,10 @@ static int ads131e08_probe(struct spi_device *spi)
 		st->vref_reg = NULL;
 	}
 
-	st->adc_clk = devm_clk_get(&spi->dev, "adc-clk");
+	st->adc_clk = devm_clk_get_enabled(&spi->dev, "adc-clk");
 	if (IS_ERR(st->adc_clk))
 		return dev_err_probe(&spi->dev, PTR_ERR(st->adc_clk),
 				     "failed to get the ADC clock\n");
-
-	ret = clk_prepare_enable(st->adc_clk);
-	if (ret) {
-		dev_err(&spi->dev, "failed to prepare/enable the ADC clock\n");
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(&spi->dev, ads131e08_clk_disable, st);
-	if (ret)
-		return ret;
 
 	adc_clk_hz = clk_get_rate(st->adc_clk);
 	if (!adc_clk_hz) {
@@ -936,9 +916,17 @@ static const struct of_device_id ads131e08_of_match[] = {
 	  .data = &ads131e08_info_tbl[ads131e06], },
 	{ .compatible = "ti,ads131e08",
 	  .data = &ads131e08_info_tbl[ads131e08], },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, ads131e08_of_match);
+
+static const struct spi_device_id ads131e08_ids[] = {
+	{ "ads131e04", (kernel_ulong_t)&ads131e08_info_tbl[ads131e04] },
+	{ "ads131e06", (kernel_ulong_t)&ads131e08_info_tbl[ads131e06] },
+	{ "ads131e08", (kernel_ulong_t)&ads131e08_info_tbl[ads131e08] },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, ads131e08_ids);
 
 static struct spi_driver ads131e08_driver = {
 	.driver = {
@@ -946,6 +934,7 @@ static struct spi_driver ads131e08_driver = {
 		.of_match_table = ads131e08_of_match,
 	},
 	.probe = ads131e08_probe,
+	.id_table = ads131e08_ids,
 };
 module_spi_driver(ads131e08_driver);
 

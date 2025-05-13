@@ -39,6 +39,7 @@
  * Currently, this driver only supports Gen3 SATA mode with external clock.
  */
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/delay.h>
@@ -961,7 +962,8 @@ static void xgene_phy_sata_cfg_lanes(struct xgene_phy_ctx *ctx)
 		serdes_wr(ctx, lane, RXTX_REG1, val);
 
 		/* Latch VTT value based on the termination to ground and
-		   enable TX FIFO */
+		 * enable TX FIFO
+		 */
 		serdes_rd(ctx, lane, RXTX_REG2, &val);
 		val = RXTX_REG2_VTT_ENA_SET(val, 0x1);
 		val = RXTX_REG2_VTT_SEL_SET(val, 0x1);
@@ -1609,7 +1611,7 @@ static const struct phy_ops xgene_phy_ops = {
 };
 
 static struct phy *xgene_phy_xlate(struct device *dev,
-				   struct of_phandle_args *args)
+				   const struct of_phandle_args *args)
 {
 	struct xgene_phy_ctx *ctx = dev_get_drvdata(dev);
 

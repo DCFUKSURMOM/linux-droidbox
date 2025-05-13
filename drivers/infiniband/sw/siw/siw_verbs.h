@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 
 /* Authors: Bernard Metzler <bmt@zurich.ibm.com> */
 /* Copyright (c) 2008-2019, IBM Corporation */
@@ -43,16 +43,15 @@ int siw_get_port_immutable(struct ib_device *base_dev, u32 port,
 int siw_query_device(struct ib_device *base_dev, struct ib_device_attr *attr,
 		     struct ib_udata *udata);
 int siw_create_cq(struct ib_cq *base_cq, const struct ib_cq_init_attr *attr,
-		  struct ib_udata *udata);
+		  struct uverbs_attr_bundle *attrs);
 int siw_query_port(struct ib_device *base_dev, u32 port,
 		   struct ib_port_attr *attr);
 int siw_query_gid(struct ib_device *base_dev, u32 port, int idx,
 		  union ib_gid *gid);
 int siw_alloc_pd(struct ib_pd *base_pd, struct ib_udata *udata);
 int siw_dealloc_pd(struct ib_pd *base_pd, struct ib_udata *udata);
-struct ib_qp *siw_create_qp(struct ib_pd *base_pd,
-			    struct ib_qp_init_attr *attr,
-			    struct ib_udata *udata);
+int siw_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attr,
+		  struct ib_udata *udata);
 int siw_query_qp(struct ib_qp *base_qp, struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr);
 int siw_verbs_modify_qp(struct ib_qp *base_qp, struct ib_qp_attr *attr,

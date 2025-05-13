@@ -286,8 +286,7 @@ static int tbs_sched_init(struct intel_gvt *gvt)
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&data->lru_runq_head);
-	hrtimer_init(&data->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	data->timer.function = tbs_timer_fn;
+	hrtimer_setup(&data->timer, tbs_timer_fn, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
 	data->period = GVT_DEFAULT_TIME_SLICE;
 	data->gvt = gvt;
 
@@ -368,7 +367,7 @@ static void tbs_sched_stop_schedule(struct intel_vgpu *vgpu)
 	vgpu_data->active = false;
 }
 
-static struct intel_gvt_sched_policy_ops tbs_schedule_ops = {
+static const struct intel_gvt_sched_policy_ops tbs_schedule_ops = {
 	.init = tbs_sched_init,
 	.clean = tbs_sched_clean,
 	.init_vgpu = tbs_sched_init_vgpu,

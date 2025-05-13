@@ -3,6 +3,7 @@
  * Copyright (C) 2020 Intel Corporation
  * Author: Johannes Berg <johannes@sipsolutions.net>
  */
+#include <stdbool.h>
 #include <os.h>
 #include <errno.h>
 #include <sched.h>
@@ -38,7 +39,7 @@ int uml_rtc_start(bool timetravel)
 		}
 
 		/* apparently timerfd won't send SIGIO, use workaround */
-		sigio_broken(uml_rtc_irq_fds[0]);
+		sigio_broken();
 		err = add_sigio_fd(uml_rtc_irq_fds[0]);
 		if (err < 0) {
 			close(uml_rtc_irq_fds[0]);

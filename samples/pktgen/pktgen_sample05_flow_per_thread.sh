@@ -16,6 +16,10 @@ root_check_run_with_sudo "$@"
 
 # Parameter parsing via include
 source ${basedir}/parameters.sh
+
+# Trap EXIT first
+trap_exit
+
 # Set some default params, if they didn't get set
 if [ -z "$DEST_IP" ]; then
     [ -z "$IP6" ] && DEST_IP="198.18.0.42" || DEST_IP="FD00::1"
@@ -63,6 +67,8 @@ for ((thread = $F_THREAD; thread <= $L_THREAD; thread++)); do
 	pg_set $dev "udp_dst_min $UDP_DST_MIN"
 	pg_set $dev "udp_dst_max $UDP_DST_MAX"
     fi
+
+    [ ! -z "$UDP_CSUM" ] && pg_set $dev "flag UDPCSUM"
 
     # Setup source IP-addresses based on thread number
     pg_set $dev "src_min 198.18.$((thread+1)).1"

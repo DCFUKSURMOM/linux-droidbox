@@ -42,6 +42,7 @@ static unsigned int sc520_freq_get_cpu_frequency(unsigned int cpu)
 	default:
 		pr_err("error: cpuctl register has unexpected value %02x\n",
 		       clockspeed_reg);
+		fallthrough;
 	case 0x01:
 		return 100000;
 	case 0x02:
@@ -91,7 +92,6 @@ static struct cpufreq_driver sc520_freq_driver = {
 	.target_index = sc520_freq_target,
 	.init	= sc520_freq_cpu_init,
 	.name	= "sc520_freq",
-	.attr	= cpufreq_generic_attr,
 };
 
 static const struct x86_cpu_id sc520_ids[] = {

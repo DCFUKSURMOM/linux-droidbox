@@ -7,6 +7,8 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/platform_device.h>
+#include <linux/module.h>
+#include <linux/mod_devicetable.h>
 
 #include "../common/hid-sensors/hid-sensor-trigger.h"
 
@@ -37,7 +39,7 @@ struct hinge_state {
 	const char *labels[CHANNEL_SCAN_INDEX_MAX];
 	struct {
 		u32 hinge_val[3];
-		u64 timestamp __aligned(8);
+		aligned_s64 timestamp;
 	} scan;
 
 	int scale_pre_decml;
@@ -261,9 +263,9 @@ static int hinge_parse_report(struct platform_device *pdev,
 /* Function to initialize the processing for usage id */
 static int hid_hinge_probe(struct platform_device *pdev)
 {
+	struct hid_sensor_hub_device *hsdev = dev_get_platdata(&pdev->dev);
 	struct hinge_state *st;
 	struct iio_dev *indio_dev;
-	struct hid_sensor_hub_device *hsdev = pdev->dev.platform_data;
 	int ret;
 	int i;
 
@@ -303,7 +305,6 @@ static int hid_hinge_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->info = &hinge_info;
 	indio_dev->name = "hinge";
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -341,17 +342,15 @@ error_remove_trigger:
 }
 
 /* Function to deinitialize the processing for usage id */
-static int hid_hinge_remove(struct platform_device *pdev)
+static void hid_hinge_remove(struct platform_device *pdev)
 {
-	struct hid_sensor_hub_device *hsdev = pdev->dev.platform_data;
+	struct hid_sensor_hub_device *hsdev = dev_get_platdata(&pdev->dev);
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct hinge_state *st = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
 	sensor_hub_remove_callback(hsdev, hsdev->usage);
 	hid_sensor_remove_trigger(indio_dev, &st->common_attributes);
-
-	return 0;
 }
 
 static const struct platform_device_id hid_hinge_ids[] = {
@@ -377,3 +376,4 @@ module_platform_driver(hid_hinge_platform_driver);
 MODULE_DESCRIPTION("HID Sensor INTEL Hinge");
 MODULE_AUTHOR("Ye Xiang <xiang.ye@intel.com>");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_HID");

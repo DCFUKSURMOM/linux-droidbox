@@ -5,9 +5,10 @@
 #include "otx2_cptvf.h"
 #include "otx2_cptlf.h"
 #include "otx2_cptvf_algs.h"
+#include "cn10k_cpt.h"
 #include <rvu_reg.h>
 
-#define OTX2_CPTVF_DRV_NAME "octeontx2-cptvf"
+#define OTX2_CPTVF_DRV_NAME "rvu_cptvf"
 
 static void cptvf_enable_pfvf_mbox_intrs(struct otx2_cptvf_dev *cptvf)
 {
@@ -70,22 +71,49 @@ static int cptvf_register_interrupts(struct otx2_cptvf_dev *cptvf)
 
 static int cptvf_pfvf_mbox_init(struct otx2_cptvf_dev *cptvf)
 {
+	struct pci_dev *pdev = cptvf->pdev;
+	resource_size_t offset, size;
 	int ret;
 
-	cptvf->pfvf_mbox_wq = alloc_workqueue("cpt_pfvf_mailbox",
-					      WQ_UNBOUND | WQ_HIGHPRI |
-					      WQ_MEM_RECLAIM, 1);
+	cptvf->pfvf_mbox_wq =
+		alloc_ordered_workqueue("cpt_pfvf_mailbox",
+					WQ_HIGHPRI | WQ_MEM_RECLAIM);
 	if (!cptvf->pfvf_mbox_wq)
 		return -ENOMEM;
 
+	if (test_bit(CN10K_MBOX, &cptvf->cap_flag)) {
+		/* For cn10k platform, VF mailbox region is in its BAR2
+		 * register space
+		 */
+		cptvf->pfvf_mbox_base = cptvf->reg_base +
+					CN10K_CPT_VF_MBOX_REGION;
+	} else {
+		offset = pci_resource_start(pdev, PCI_MBOX_BAR_NUM);
+		size = pci_resource_len(pdev, PCI_MBOX_BAR_NUM);
+		/* Map PF-VF mailbox memory */
+		cptvf->pfvf_mbox_base = devm_ioremap_wc(&pdev->dev, offset,
+							size);
+		if (!cptvf->pfvf_mbox_base) {
+			dev_err(&pdev->dev, "Unable to map BAR4\n");
+			ret = -ENOMEM;
+			goto free_wqe;
+		}
+	}
+
 	ret = otx2_mbox_init(&cptvf->pfvf_mbox, cptvf->pfvf_mbox_base,
-			     cptvf->pdev, cptvf->reg_base, MBOX_DIR_VFPF, 1);
+			     pdev, cptvf->reg_base, MBOX_DIR_VFPF, 1);
 	if (ret)
 		goto free_wqe;
+
+	ret = otx2_cpt_mbox_bbuf_init(cptvf, pdev);
+	if (ret)
+		goto destroy_mbox;
 
 	INIT_WORK(&cptvf->pfvf_mbox_work, otx2_cptvf_pfvf_mbox_handler);
 	return 0;
 
+destroy_mbox:
+	otx2_mbox_destroy(&cptvf->pfvf_mbox);
 free_wqe:
 	destroy_workqueue(cptvf->pfvf_mbox_wq);
 	return ret;
@@ -218,11 +246,15 @@ static void cptvf_lf_shutdown(struct otx2_cptlfs_info *lfs)
 	/* Unregister crypto algorithms */
 	otx2_cpt_crypto_exit(lfs->pdev, THIS_MODULE);
 	/* Unregister LFs interrupts */
-	otx2_cptlf_unregister_interrupts(lfs);
+	otx2_cptlf_unregister_misc_interrupts(lfs);
+	otx2_cptlf_unregister_done_interrupts(lfs);
 	/* Cleanup LFs software side */
 	lf_sw_cleanup(lfs);
+	/* Free instruction queues */
+	otx2_cpt_free_instruction_queues(lfs);
 	/* Send request to detach LFs */
 	otx2_cpt_detach_rsrcs_msg(lfs);
+	lfs->lfs_num = 0;
 }
 
 static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
@@ -249,12 +281,10 @@ static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
 	if (ret)
 		return ret;
 
-	lfs->reg_base = cptvf->reg_base;
-	lfs->pdev = cptvf->pdev;
-	lfs->mbox = &cptvf->pfvf_mbox;
+	lfs_num = cptvf->lfs.kvf_limits;
 
-	lfs_num = cptvf->lfs.kvf_limits ? cptvf->lfs.kvf_limits :
-		  num_online_cpus();
+	otx2_cptlf_set_dev_info(lfs, cptvf->pdev, cptvf->reg_base,
+				&cptvf->pfvf_mbox, cptvf->blkaddr);
 	ret = otx2_cptlf_init(lfs, eng_grp_msk, OTX2_CPT_QUEUE_HI_PRIO,
 			      lfs_num);
 	if (ret)
@@ -271,7 +301,11 @@ static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
 		goto cleanup_lf;
 
 	/* Register LFs interrupts */
-	ret = otx2_cptlf_register_interrupts(lfs);
+	ret = otx2_cptlf_register_misc_interrupts(lfs);
+	if (ret)
+		goto cleanup_lf_sw;
+
+	ret = otx2_cptlf_register_done_interrupts(lfs);
 	if (ret)
 		goto cleanup_lf_sw;
 
@@ -292,7 +326,8 @@ static int cptvf_lf_init(struct otx2_cptvf_dev *cptvf)
 disable_irqs:
 	otx2_cptlf_free_irqs_affinity(lfs);
 unregister_intr:
-	otx2_cptlf_unregister_interrupts(lfs);
+	otx2_cptlf_unregister_misc_interrupts(lfs);
+	otx2_cptlf_unregister_done_interrupts(lfs);
 cleanup_lf_sw:
 	lf_sw_cleanup(lfs);
 cleanup_lf:
@@ -305,7 +340,6 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 			    const struct pci_device_id *ent)
 {
 	struct device *dev = &pdev->dev;
-	resource_size_t offset, size;
 	struct otx2_cptvf_dev *cptvf;
 	int ret;
 
@@ -324,9 +358,8 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 		dev_err(dev, "Unable to get usable DMA configuration\n");
 		goto clear_drvdata;
 	}
-	/* Map VF's configuration registers */
-	ret = pcim_iomap_regions_request_all(pdev, 1 << PCI_PF_REG_BAR_NUM,
-					     OTX2_CPTVF_DRV_NAME);
+
+	ret = pcim_request_all_regions(pdev, OTX2_CPTVF_DRV_NAME);
 	if (ret) {
 		dev_err(dev, "Couldn't get PCI resources 0x%x\n", ret);
 		goto clear_drvdata;
@@ -335,17 +368,20 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, cptvf);
 	cptvf->pdev = pdev;
 
-	cptvf->reg_base = pcim_iomap_table(pdev)[PCI_PF_REG_BAR_NUM];
-
-	offset = pci_resource_start(pdev, PCI_MBOX_BAR_NUM);
-	size = pci_resource_len(pdev, PCI_MBOX_BAR_NUM);
-	/* Map PF-VF mailbox memory */
-	cptvf->pfvf_mbox_base = devm_ioremap_wc(dev, offset, size);
-	if (!cptvf->pfvf_mbox_base) {
-		dev_err(&pdev->dev, "Unable to map BAR4\n");
-		ret = -ENODEV;
+	/* Map VF's configuration registers */
+	cptvf->reg_base = pcim_iomap(pdev, PCI_PF_REG_BAR_NUM, 0);
+	if (!cptvf->reg_base) {
+		ret = -ENOMEM;
+		dev_err(dev, "Couldn't ioremap PCI resource 0x%x\n", ret);
 		goto clear_drvdata;
 	}
+
+	otx2_cpt_set_hw_caps(pdev, &cptvf->cap_flag);
+
+	ret = cn10k_cptvf_lmtst_init(cptvf);
+	if (ret)
+		goto clear_drvdata;
+
 	/* Initialize PF<=>VF mailbox */
 	ret = cptvf_pfvf_mbox_init(cptvf);
 	if (ret)
@@ -355,6 +391,18 @@ static int otx2_cptvf_probe(struct pci_dev *pdev,
 	ret = cptvf_register_interrupts(cptvf);
 	if (ret)
 		goto destroy_pfvf_mbox;
+
+	cptvf->blkaddr = BLKADDR_CPT0;
+
+	cptvf_hw_ops_get(cptvf);
+
+	ret = otx2_cptvf_send_caps_msg(cptvf);
+	if (ret) {
+		dev_err(&pdev->dev, "Couldn't get CPT engine capabilities.\n");
+		goto unregister_interrupts;
+	}
+	if (cptvf->eng_caps[OTX2_CPT_SE_TYPES] & BIT_ULL(35))
+		cptvf->lfs.ops->cpt_sg_info_create = cn10k_sgv2_info_create;
 
 	/* Initialize CPT LFs */
 	ret = cptvf_lf_init(cptvf);
@@ -392,6 +440,7 @@ static void otx2_cptvf_remove(struct pci_dev *pdev)
 /* Supported devices */
 static const struct pci_device_id otx2_cptvf_id_table[] = {
 	{PCI_VDEVICE(CAVIUM, OTX2_CPT_PCI_VF_DEVICE_ID), 0},
+	{PCI_VDEVICE(CAVIUM, CN10K_CPT_PCI_VF_DEVICE_ID), 0},
 	{ 0, }  /* end of table */
 };
 
@@ -404,7 +453,9 @@ static struct pci_driver otx2_cptvf_pci_driver = {
 
 module_pci_driver(otx2_cptvf_pci_driver);
 
+MODULE_IMPORT_NS("CRYPTO_DEV_OCTEONTX2_CPT");
+
 MODULE_AUTHOR("Marvell");
-MODULE_DESCRIPTION("Marvell OcteonTX2 CPT Virtual Function Driver");
+MODULE_DESCRIPTION("Marvell RVU CPT Virtual Function Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_DEVICE_TABLE(pci, otx2_cptvf_id_table);

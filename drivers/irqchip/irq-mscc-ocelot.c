@@ -37,7 +37,7 @@ static struct chip_props ocelot_props = {
 	.reg_off_ena_clr	= 0x1c,
 	.reg_off_ena_set	= 0x20,
 	.reg_off_ident		= 0x38,
-	.reg_off_trigger	= 0x5c,
+	.reg_off_trigger	= 0x4,
 	.n_irq			= 24,
 };
 
@@ -70,7 +70,7 @@ static struct chip_props jaguar2_props = {
 	.reg_off_ena_clr	= 0x1c,
 	.reg_off_ena_set	= 0x20,
 	.reg_off_ident		= 0x38,
-	.reg_off_trigger	= 0x5c,
+	.reg_off_trigger	= 0x4,
 	.n_irq			= 29,
 };
 
@@ -84,6 +84,12 @@ static void ocelot_irq_unmask(struct irq_data *data)
 	u32 val;
 
 	irq_gc_lock(gc);
+	/*
+	 * Clear sticky bits for edge mode interrupts.
+	 * Serval has only one trigger register replication, but the adjacent
+	 * register is always read as zero, so there's no need to handle this
+	 * case separately.
+	 */
 	val = irq_reg_readl(gc, ICPU_CFG_INTR_INTR_TRIGGER(p, 0)) |
 		irq_reg_readl(gc, ICPU_CFG_INTR_INTR_TRIGGER(p, 1));
 	if (!(val & mask))
@@ -107,7 +113,7 @@ static void ocelot_irq_handler(struct irq_desc *desc)
 	while (reg) {
 		u32 hwirq = __fls(reg);
 
-		generic_handle_irq(irq_find_mapping(d, hwirq));
+		generic_handle_domain_irq(d, hwirq);
 		reg &= ~(BIT(hwirq));
 	}
 

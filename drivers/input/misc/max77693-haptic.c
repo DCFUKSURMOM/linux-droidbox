@@ -18,11 +18,13 @@
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 #include <linux/slab.h>
+#include <linux/string_choices.h>
 #include <linux/workqueue.h>
 #include <linux/regulator/consumer.h>
 #include <linux/mfd/max77693.h>
 #include <linux/mfd/max77693-common.h>
 #include <linux/mfd/max77693-private.h>
+#include <linux/mfd/max77705-private.h>
 #include <linux/mfd/max77843-private.h>
 
 #define MAX_MAGNITUDE_SHIFT	16
@@ -94,7 +96,7 @@ static int max77843_haptic_bias(struct max77693_haptic *haptic, bool on)
 				   on << MAINCTRL1_BIASEN_SHIFT);
 	if (error) {
 		dev_err(haptic->dev, "failed to %s bias: %d\n",
-			on ? "enable" : "disable", error);
+			str_enable_disable(on), error);
 		return error;
 	}
 
@@ -114,6 +116,13 @@ static int max77693_haptic_configure(struct max77693_haptic *haptic,
 			(haptic->mode << MAX77693_CONFIG2_HTYP) |
 			MAX77693_HAPTIC_PWM_DIVISOR_128);
 		config_reg = MAX77693_HAPTIC_REG_CONFIG2;
+		break;
+	case TYPE_MAX77705:
+		value = ((haptic->type << MAX77693_CONFIG2_MODE) |
+			(enable << MAX77693_CONFIG2_MEN) |
+			(haptic->mode << MAX77693_CONFIG2_HTYP) |
+			MAX77693_HAPTIC_PWM_DIVISOR_128);
+		config_reg = MAX77705_PMIC_REG_MCONFIG;
 		break;
 	case TYPE_MAX77843:
 		value = (haptic->type << MCONFIG_MODE_SHIFT) |
@@ -307,11 +316,12 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 	haptic->suspend_state = false;
 
 	/* Variant-specific init */
-	haptic->dev_type = platform_get_device_id(pdev)->driver_data;
+	haptic->dev_type = max77693->type;
 	switch (haptic->dev_type) {
 	case TYPE_MAX77693:
 		haptic->regmap_haptic = max77693->regmap_haptic;
 		break;
+	case TYPE_MAX77705:
 	case TYPE_MAX77843:
 		haptic->regmap_haptic = max77693->regmap;
 		break;
@@ -375,7 +385,7 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused max77693_haptic_suspend(struct device *dev)
+static int max77693_haptic_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
@@ -388,7 +398,7 @@ static int __maybe_unused max77693_haptic_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused max77693_haptic_resume(struct device *dev)
+static int max77693_haptic_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct max77693_haptic *haptic = platform_get_drvdata(pdev);
@@ -401,20 +411,31 @@ static int __maybe_unused max77693_haptic_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(max77693_haptic_pm_ops,
-			 max77693_haptic_suspend, max77693_haptic_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(max77693_haptic_pm_ops,
+				max77693_haptic_suspend,
+				max77693_haptic_resume);
 
 static const struct platform_device_id max77693_haptic_id[] = {
-	{ "max77693-haptic", TYPE_MAX77693 },
-	{ "max77843-haptic", TYPE_MAX77843 },
+	{ "max77693-haptic", },
+	{ "max77705-haptic", },
+	{ "max77843-haptic", },
 	{},
 };
 MODULE_DEVICE_TABLE(platform, max77693_haptic_id);
 
+static const struct of_device_id of_max77693_haptic_dt_match[] = {
+	{ .compatible = "maxim,max77693-haptic", },
+	{ .compatible = "maxim,max77705-haptic", },
+	{ .compatible = "maxim,max77843-haptic", },
+	{ /* sentinel */ },
+};
+MODULE_DEVICE_TABLE(of, of_max77693_haptic_dt_match);
+
 static struct platform_driver max77693_haptic_driver = {
 	.driver		= {
 		.name	= "max77693-haptic",
-		.pm	= &max77693_haptic_pm_ops,
+		.pm	= pm_sleep_ptr(&max77693_haptic_pm_ops),
+		.of_match_table = of_max77693_haptic_dt_match,
 	},
 	.probe		= max77693_haptic_probe,
 	.id_table	= max77693_haptic_id,
@@ -423,6 +444,5 @@ module_platform_driver(max77693_haptic_driver);
 
 MODULE_AUTHOR("Jaewon Kim <jaewon02.kim@samsung.com>");
 MODULE_AUTHOR("Krzysztof Kozlowski <krzk@kernel.org>");
-MODULE_DESCRIPTION("MAXIM 77693/77843 Haptic driver");
-MODULE_ALIAS("platform:max77693-haptic");
+MODULE_DESCRIPTION("MAXIM 77693/77705/77843 Haptic driver");
 MODULE_LICENSE("GPL");

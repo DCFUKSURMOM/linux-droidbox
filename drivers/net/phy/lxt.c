@@ -242,8 +242,8 @@ static int lxt973a2_read_status(struct phy_device *phydev)
 				return lpa;
 
 			/* If both registers are equal, it is suspect but not
-			* impossible, hence a new try
-			*/
+			 * impossible, hence a new try
+			 */
 		} while (lpa == adv && retry--);
 
 		mii_lpa_to_linkmode_lpa_t(phydev->lp_advertising, lpa);
@@ -348,7 +348,7 @@ static struct phy_driver lxt97x_driver[] = {
 
 module_phy_driver(lxt97x_driver);
 
-static struct mdio_device_id __maybe_unused lxt_tbl[] = {
+static const struct mdio_device_id __maybe_unused lxt_tbl[] = {
 	{ 0x78100000, 0xfffffff0 },
 	{ 0x001378e0, 0xfffffff0 },
 	{ 0x00137a10, 0xfffffff0 },

@@ -174,6 +174,7 @@ static inline void zf_set_timer(unsigned short new, unsigned char n)
 		fallthrough;
 	case WD2:
 		zf_writeb(COUNTER_2, new > 0xff ? 0xff : new);
+		fallthrough;
 	default:
 		return;
 	}
@@ -188,7 +189,7 @@ static void zf_timer_off(void)
 	unsigned long flags;
 
 	/* stop internal ping */
-	del_timer_sync(&zf_timer);
+	timer_delete_sync(&zf_timer);
 
 	spin_lock_irqsave(&zf_port_lock, flags);
 	/* stop watchdog timer */
@@ -336,7 +337,7 @@ static int zf_close(struct inode *inode, struct file *file)
 	if (zf_expect_close == 42)
 		zf_timer_off();
 	else {
-		del_timer(&zf_timer);
+		timer_delete(&zf_timer);
 		pr_err("device file closed unexpectedly. Will not stop the WDT!\n");
 	}
 	clear_bit(0, &zf_is_open);
@@ -358,7 +359,6 @@ static int zf_notify_sys(struct notifier_block *this, unsigned long code,
 
 static const struct file_operations zf_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= zf_write,
 	.unlocked_ioctl = zf_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,

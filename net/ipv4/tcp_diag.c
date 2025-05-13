@@ -83,7 +83,7 @@ static int tcp_diag_put_md5sig(struct sk_buff *skb,
 #endif
 
 static int tcp_diag_put_ulp(struct sk_buff *skb, struct sock *sk,
-			    const struct tcp_ulp_ops *ulp_ops)
+			    const struct tcp_ulp_ops *ulp_ops, bool net_admin)
 {
 	struct nlattr *nest;
 	int err;
@@ -97,7 +97,7 @@ static int tcp_diag_put_ulp(struct sk_buff *skb, struct sock *sk,
 		goto nla_failure;
 
 	if (ulp_ops->get_info)
-		err = ulp_ops->get_info(sk, skb);
+		err = ulp_ops->get_info(sk, skb, net_admin);
 	if (err)
 		goto nla_failure;
 
@@ -113,6 +113,7 @@ static int tcp_diag_get_aux(struct sock *sk, bool net_admin,
 			    struct sk_buff *skb)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
+	const struct tcp_ulp_ops *ulp_ops;
 	int err = 0;
 
 #ifdef CONFIG_TCP_MD5SIG
@@ -129,15 +130,13 @@ static int tcp_diag_get_aux(struct sock *sk, bool net_admin,
 	}
 #endif
 
-	if (net_admin) {
-		const struct tcp_ulp_ops *ulp_ops;
-
-		ulp_ops = icsk->icsk_ulp_ops;
-		if (ulp_ops)
-			err = tcp_diag_put_ulp(skb, sk, ulp_ops);
-		if (err)
+	ulp_ops = icsk->icsk_ulp_ops;
+	if (ulp_ops) {
+		err = tcp_diag_put_ulp(skb, sk, ulp_ops, net_admin);
+		if (err < 0)
 			return err;
 	}
+
 	return 0;
 }
 
@@ -164,7 +163,7 @@ static size_t tcp_diag_get_aux_size(struct sock *sk, bool net_admin)
 	}
 #endif
 
-	if (net_admin && sk_fullsock(sk)) {
+	if (sk_fullsock(sk)) {
 		const struct tcp_ulp_ops *ulp_ops;
 
 		ulp_ops = icsk->icsk_ulp_ops;
@@ -172,7 +171,7 @@ static size_t tcp_diag_get_aux_size(struct sock *sk, bool net_admin)
 			size += nla_total_size(0) +
 				nla_total_size(TCP_ULP_NAME_MAX);
 			if (ulp_ops->get_info_size)
-				size += ulp_ops->get_info_size(sk);
+				size += ulp_ops->get_info_size(sk, net_admin);
 		}
 	}
 	return size;
@@ -181,13 +180,21 @@ static size_t tcp_diag_get_aux_size(struct sock *sk, bool net_admin)
 static void tcp_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 			  const struct inet_diag_req_v2 *r)
 {
-	inet_diag_dump_icsk(&tcp_hashinfo, skb, cb, r);
+	struct inet_hashinfo *hinfo;
+
+	hinfo = sock_net(cb->skb->sk)->ipv4.tcp_death_row.hashinfo;
+
+	inet_diag_dump_icsk(hinfo, skb, cb, r);
 }
 
 static int tcp_diag_dump_one(struct netlink_callback *cb,
 			     const struct inet_diag_req_v2 *req)
 {
-	return inet_diag_dump_one_icsk(&tcp_hashinfo, cb, req);
+	struct inet_hashinfo *hinfo;
+
+	hinfo = sock_net(cb->skb->sk)->ipv4.tcp_death_row.hashinfo;
+
+	return inet_diag_dump_one_icsk(hinfo, cb, req);
 }
 
 #ifdef CONFIG_INET_DIAG_DESTROY
@@ -195,8 +202,12 @@ static int tcp_diag_destroy(struct sk_buff *in_skb,
 			    const struct inet_diag_req_v2 *req)
 {
 	struct net *net = sock_net(in_skb->sk);
-	struct sock *sk = inet_diag_find_one_icsk(net, &tcp_hashinfo, req);
+	struct inet_hashinfo *hinfo;
+	struct sock *sk;
 	int err;
+
+	hinfo = net->ipv4.tcp_death_row.hashinfo;
+	sk = inet_diag_find_one_icsk(net, hinfo, req);
 
 	if (IS_ERR(sk))
 		return PTR_ERR(sk);
@@ -210,6 +221,7 @@ static int tcp_diag_destroy(struct sk_buff *in_skb,
 #endif
 
 static const struct inet_diag_handler tcp_diag_handler = {
+	.owner			= THIS_MODULE,
 	.dump			= tcp_diag_dump,
 	.dump_one		= tcp_diag_dump_one,
 	.idiag_get_info		= tcp_diag_get_info,
@@ -235,4 +247,5 @@ static void __exit tcp_diag_exit(void)
 module_init(tcp_diag_init);
 module_exit(tcp_diag_exit);
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("TCP socket monitoring via SOCK_DIAG");
 MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_NETLINK, NETLINK_SOCK_DIAG, 2-6 /* AF_INET - IPPROTO_TCP */);

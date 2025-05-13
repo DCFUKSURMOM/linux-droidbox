@@ -133,7 +133,7 @@ static void remove(struct pci_dev *pdev)
 	uio_unregister_device(info);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
-	iounmap(info->priv);
+	pci_iounmap(pdev, info->priv);
 }
 
 static struct pci_driver pci_driver = {
@@ -144,4 +144,5 @@ static struct pci_driver pci_driver = {
 };
 
 module_pci_driver(pci_driver);
+MODULE_DESCRIPTION("Adrienne Electronics Corp time code PCI device");
 MODULE_LICENSE("GPL");

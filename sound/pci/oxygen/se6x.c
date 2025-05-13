@@ -137,12 +137,9 @@ static struct pci_driver se6x_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = se6x_ids,
 	.probe = se6x_probe,
-	.remove = oxygen_pci_remove,
-#ifdef CONFIG_PM_SLEEP
 	.driver = {
-		.pm = &oxygen_pci_pm,
+		.pm = pm_sleep_ptr(&oxygen_pci_pm),
 	},
-#endif
 	.shutdown = oxygen_pci_shutdown,
 };
 

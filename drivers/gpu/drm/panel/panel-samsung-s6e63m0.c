@@ -15,37 +15,13 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/media-bus-format.h>
 
 #include <video/mipi_display.h>
 
 #include "panel-samsung-s6e63m0.h"
-
-/* Manufacturer Command Set */
-#define MCS_ELVSS_ON		0xb1
-#define MCS_TEMP_SWIRE		0xb2
-#define MCS_PENTILE_1		0xb3
-#define MCS_PENTILE_2		0xb4
-#define MCS_GAMMA_DELTA_Y_RED	0xb5
-#define MCS_GAMMA_DELTA_X_RED	0xb6
-#define MCS_GAMMA_DELTA_Y_GREEN	0xb7
-#define MCS_GAMMA_DELTA_X_GREEN	0xb8
-#define MCS_GAMMA_DELTA_Y_BLUE	0xb9
-#define MCS_GAMMA_DELTA_X_BLUE	0xba
-#define MCS_MIECTL1		0xc0
-#define MCS_BCMODE		0xc1
-#define MCS_ERROR_CHECK		0xd5
-#define MCS_READ_ID1		0xda
-#define MCS_READ_ID2		0xdb
-#define MCS_READ_ID3		0xdc
-#define MCS_LEVEL_2_KEY		0xf0
-#define MCS_MTP_KEY		0xf1
-#define MCS_DISCTL		0xf2
-#define MCS_SRCCTL		0xf6
-#define MCS_IFCTL		0xf7
-#define MCS_PANELCTL		0xf8
-#define MCS_PGAMMACTL		0xfa
 
 #define S6E63M0_LCD_ID_VALUE_M2		0xA4
 #define S6E63M0_LCD_ID_VALUE_SM2	0xB4
@@ -283,8 +259,9 @@ static u8 const s6e63m0_elvss_per_gamma[NUM_GAMMA_LEVELS] = {
 
 struct s6e63m0 {
 	struct device *dev;
-	int (*dcs_read)(struct device *dev, const u8 cmd, u8 *val);
-	int (*dcs_write)(struct device *dev, const u8 *data, size_t len);
+	void *transport_data;
+	int (*dcs_read)(struct device *dev, void *trsp, const u8 cmd, u8 *val);
+	int (*dcs_write)(struct device *dev, void *trsp, const u8 *data, size_t len);
 	struct drm_panel panel;
 	struct backlight_device *bl_dev;
 	u8 lcd_type;
@@ -293,9 +270,6 @@ struct s6e63m0 {
 
 	struct regulator_bulk_data supplies[2];
 	struct gpio_desc *reset_gpio;
-
-	bool prepared;
-	bool enabled;
 
 	/*
 	 * This field is tested by functions directly accessing bus before
@@ -340,7 +314,7 @@ static void s6e63m0_dcs_read(struct s6e63m0 *ctx, const u8 cmd, u8 *data)
 	if (ctx->error < 0)
 		return;
 
-	ctx->error = ctx->dcs_read(ctx->dev, cmd, data);
+	ctx->error = ctx->dcs_read(ctx->dev, ctx->transport_data, cmd, data);
 }
 
 static void s6e63m0_dcs_write(struct s6e63m0 *ctx, const u8 *data, size_t len)
@@ -348,7 +322,7 @@ static void s6e63m0_dcs_write(struct s6e63m0 *ctx, const u8 *data, size_t len)
 	if (ctx->error < 0 || len == 0)
 		return;
 
-	ctx->error = ctx->dcs_write(ctx->dev, data, len);
+	ctx->error = ctx->dcs_write(ctx->dev, ctx->transport_data, data, len);
 }
 
 #define s6e63m0_dcs_write_seq_static(ctx, seq ...) \
@@ -526,17 +500,12 @@ static int s6e63m0_disable(struct drm_panel *panel)
 {
 	struct s6e63m0 *ctx = panel_to_s6e63m0(panel);
 
-	if (!ctx->enabled)
-		return 0;
-
 	backlight_disable(ctx->bl_dev);
 
 	s6e63m0_dcs_write_seq_static(ctx, MIPI_DCS_SET_DISPLAY_OFF);
 	msleep(10);
 	s6e63m0_dcs_write_seq_static(ctx, MIPI_DCS_ENTER_SLEEP_MODE);
 	msleep(120);
-
-	ctx->enabled = false;
 
 	return 0;
 }
@@ -546,16 +515,11 @@ static int s6e63m0_unprepare(struct drm_panel *panel)
 	struct s6e63m0 *ctx = panel_to_s6e63m0(panel);
 	int ret;
 
-	if (!ctx->prepared)
-		return 0;
-
 	s6e63m0_clear_error(ctx);
 
 	ret = s6e63m0_power_off(ctx);
 	if (ret < 0)
 		return ret;
-
-	ctx->prepared = false;
 
 	return 0;
 }
@@ -564,9 +528,6 @@ static int s6e63m0_prepare(struct drm_panel *panel)
 {
 	struct s6e63m0 *ctx = panel_to_s6e63m0(panel);
 	int ret;
-
-	if (ctx->prepared)
-		return 0;
 
 	ret = s6e63m0_power_on(ctx);
 	if (ret < 0)
@@ -588,17 +549,12 @@ static int s6e63m0_prepare(struct drm_panel *panel)
 	if (ret < 0)
 		s6e63m0_unprepare(panel);
 
-	ctx->prepared = true;
-
 	return ret;
 }
 
 static int s6e63m0_enable(struct drm_panel *panel)
 {
 	struct s6e63m0 *ctx = panel_to_s6e63m0(panel);
-
-	if (ctx->enabled)
-		return 0;
 
 	s6e63m0_dcs_write_seq_static(ctx, MIPI_DCS_EXIT_SLEEP_MODE);
 	msleep(120);
@@ -611,8 +567,6 @@ static int s6e63m0_enable(struct drm_panel *panel)
 				     0x0F, 0x00);
 
 	backlight_enable(ctx->bl_dev);
-
-	ctx->enabled = true;
 
 	return 0;
 }
@@ -713,9 +667,9 @@ static int s6e63m0_backlight_register(struct s6e63m0 *ctx, u32 max_brightness)
 	return ret;
 }
 
-int s6e63m0_probe(struct device *dev,
-		  int (*dcs_read)(struct device *dev, const u8 cmd, u8 *val),
-		  int (*dcs_write)(struct device *dev, const u8 *data, size_t len),
+int s6e63m0_probe(struct device *dev, void *trsp,
+		  int (*dcs_read)(struct device *dev, void *trsp, const u8 cmd, u8 *val),
+		  int (*dcs_write)(struct device *dev, void *trsp, const u8 *data, size_t len),
 		  bool dsi_mode)
 {
 	struct s6e63m0 *ctx;
@@ -726,14 +680,13 @@ int s6e63m0_probe(struct device *dev,
 	if (!ctx)
 		return -ENOMEM;
 
+	ctx->transport_data = trsp;
 	ctx->dsi_mode = dsi_mode;
 	ctx->dcs_read = dcs_read;
 	ctx->dcs_write = dcs_write;
 	dev_set_drvdata(dev, ctx);
 
 	ctx->dev = dev;
-	ctx->enabled = false;
-	ctx->prepared = false;
 
 	ret = device_property_read_u32(dev, "max-brightness", &max_brightness);
 	if (ret)
@@ -772,13 +725,11 @@ int s6e63m0_probe(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(s6e63m0_probe);
 
-int s6e63m0_remove(struct device *dev)
+void s6e63m0_remove(struct device *dev)
 {
 	struct s6e63m0 *ctx = dev_get_drvdata(dev);
 
 	drm_panel_remove(&ctx->panel);
-
-	return 0;
 }
 EXPORT_SYMBOL_GPL(s6e63m0_remove);
 

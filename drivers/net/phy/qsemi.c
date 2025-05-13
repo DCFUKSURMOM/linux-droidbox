@@ -100,6 +100,7 @@ static int qs6612_ack_interrupt(struct phy_device *phydev)
 static int qs6612_config_intr(struct phy_device *phydev)
 {
 	int err;
+
 	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
 		/* clear any interrupts before enabling them */
 		err = qs6612_ack_interrupt(phydev);
@@ -154,7 +155,7 @@ static struct phy_driver qs6612_driver[] = { {
 
 module_phy_driver(qs6612_driver);
 
-static struct mdio_device_id __maybe_unused qs6612_tbl[] = {
+static const struct mdio_device_id __maybe_unused qs6612_tbl[] = {
 	{ 0x00181440, 0xfffffff0 },
 	{ }
 };

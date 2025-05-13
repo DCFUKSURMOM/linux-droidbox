@@ -32,6 +32,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_edid.h>
 
 #include "omapdss.h"
 #include "hdmi5_core.h"
@@ -338,10 +339,9 @@ static void hdmi5_bridge_mode_set(struct drm_bridge *bridge,
 }
 
 static void hdmi5_bridge_enable(struct drm_bridge *bridge,
-				struct drm_bridge_state *bridge_state)
+				struct drm_atomic_state *state)
 {
 	struct omap_hdmi *hdmi = drm_bridge_to_hdmi(bridge);
-	struct drm_atomic_state *state = bridge_state->base.state;
 	struct drm_connector_state *conn_state;
 	struct drm_connector *connector;
 	struct drm_crtc_state *crtc_state;
@@ -407,7 +407,7 @@ done:
 }
 
 static void hdmi5_bridge_disable(struct drm_bridge *bridge,
-				 struct drm_bridge_state *bridge_state)
+				 struct drm_atomic_state *state)
 {
 	struct omap_hdmi *hdmi = drm_bridge_to_hdmi(bridge);
 	unsigned long flags;
@@ -424,11 +424,11 @@ static void hdmi5_bridge_disable(struct drm_bridge *bridge,
 	mutex_unlock(&hdmi->lock);
 }
 
-static struct edid *hdmi5_bridge_get_edid(struct drm_bridge *bridge,
-					  struct drm_connector *connector)
+static const struct drm_edid *hdmi5_bridge_edid_read(struct drm_bridge *bridge,
+						     struct drm_connector *connector)
 {
 	struct omap_hdmi *hdmi = drm_bridge_to_hdmi(bridge);
-	struct edid *edid;
+	const struct drm_edid *drm_edid;
 	bool need_enable;
 	int idlemode;
 	int r;
@@ -451,7 +451,7 @@ static struct edid *hdmi5_bridge_get_edid(struct drm_bridge *bridge,
 
 	hdmi5_core_ddc_init(&hdmi->core);
 
-	edid = drm_do_get_edid(connector, hdmi5_core_ddc_read, &hdmi->core);
+	drm_edid = drm_edid_read_custom(connector, hdmi5_core_ddc_read, &hdmi->core);
 
 	hdmi5_core_ddc_uninit(&hdmi->core);
 
@@ -463,7 +463,7 @@ static struct edid *hdmi5_bridge_get_edid(struct drm_bridge *bridge,
 	if (need_enable)
 		hdmi_core_disable(hdmi);
 
-	return (struct edid *)edid;
+	return drm_edid;
 }
 
 static const struct drm_bridge_funcs hdmi5_bridge_funcs = {
@@ -474,7 +474,7 @@ static const struct drm_bridge_funcs hdmi5_bridge_funcs = {
 	.atomic_reset = drm_atomic_helper_bridge_reset,
 	.atomic_enable = hdmi5_bridge_enable,
 	.atomic_disable = hdmi5_bridge_disable,
-	.get_edid = hdmi5_bridge_get_edid,
+	.edid_read = hdmi5_bridge_edid_read,
 };
 
 static void hdmi5_bridge_init(struct omap_hdmi *hdmi)
@@ -797,7 +797,7 @@ err_free:
 	return r;
 }
 
-static int hdmi5_remove(struct platform_device *pdev)
+static void hdmi5_remove(struct platform_device *pdev)
 {
 	struct omap_hdmi *hdmi = platform_get_drvdata(pdev);
 
@@ -808,7 +808,6 @@ static int hdmi5_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	kfree(hdmi);
-	return 0;
 }
 
 static const struct of_device_id hdmi_of_match[] = {

@@ -183,7 +183,7 @@ void ishtp_hid_wakeup(struct hid_device *hid)
 	wake_up_interruptible(&hid_data->hid_wait);
 }
 
-static struct hid_ll_driver ishtp_hid_ll_driver = {
+static const struct hid_ll_driver ishtp_hid_ll_driver = {
 	.parse = ishtp_hid_parse,
 	.start = ishtp_hid_start,
 	.stop = ishtp_hid_stop,
@@ -254,19 +254,21 @@ err_hid_data:
 }
 
 /**
- * ishtp_hid_probe() - Remove registered hid device
+ * ishtp_hid_remove() - Remove registered hid device
  * @client_data:	client data pointer
  *
  * This function is used to destroy allocatd HID device.
  */
 void ishtp_hid_remove(struct ishtp_cl_data *client_data)
 {
+	void *data;
 	int i;
 
 	for (i = 0; i < client_data->num_hid_devices; ++i) {
 		if (client_data->hid_sensor_hubs[i]) {
-			kfree(client_data->hid_sensor_hubs[i]->driver_data);
+			data = client_data->hid_sensor_hubs[i]->driver_data;
 			hid_destroy_device(client_data->hid_sensor_hubs[i]);
+			kfree(data);
 			client_data->hid_sensor_hubs[i] = NULL;
 		}
 	}

@@ -87,9 +87,9 @@ static void ldisc_tx_wakeup(struct tty_struct *tty);
 static inline void update_tty_status(struct ser_device *ser)
 {
 	ser->tty_status =
-		ser->tty->stopped << 5 |
-		ser->tty->flow_stopped << 3 |
-		ser->tty->packet << 2;
+		ser->tty->flow.stopped << 5 |
+		ser->tty->flow.tco_stopped << 3 |
+		ser->tty->ctrl.packet << 2;
 }
 static inline void debugfs_init(struct ser_device *ser, struct tty_struct *tty)
 {
@@ -126,15 +126,6 @@ static inline void debugfs_rx(struct ser_device *ser, const u8 *data, int size)
 	ser->rx_blob.data = ser->rx_data;
 	ser->rx_blob.size = size;
 }
-
-static inline void debugfs_tx(struct ser_device *ser, const u8 *data, int size)
-{
-	if (size > sizeof(ser->tx_data))
-		size = sizeof(ser->tx_data);
-	memcpy(ser->tx_data, data, size);
-	ser->tx_blob.data = ser->tx_data;
-	ser->tx_blob.size = size;
-}
 #else
 static inline void debugfs_init(struct ser_device *ser, struct tty_struct *tty)
 {
@@ -151,15 +142,10 @@ static inline void update_tty_status(struct ser_device *ser)
 static inline void debugfs_rx(struct ser_device *ser, const u8 *data, int size)
 {
 }
-
-static inline void debugfs_tx(struct ser_device *ser, const u8 *data, int size)
-{
-}
-
 #endif
 
 static void ldisc_receive(struct tty_struct *tty, const u8 *data,
-			char *flags, int count)
+			  const u8 *flags, size_t count)
 {
 	struct sk_buff *skb = NULL;
 	struct ser_device *ser;
@@ -196,7 +182,7 @@ static void ldisc_receive(struct tty_struct *tty, const u8 *data,
 	skb_reset_mac_header(skb);
 	debugfs_rx(ser, data, count);
 	/* Push received packet up the stack. */
-	ret = netif_rx_ni(skb);
+	ret = netif_rx(skb);
 	if (!ret) {
 		ser->dev->stats.rx_packets++;
 		ser->dev->stats.rx_bytes += count;
@@ -344,7 +330,7 @@ static int ldisc_open(struct tty_struct *tty)
 	ser->tty = tty_kref_get(tty);
 	ser->dev = dev;
 	debugfs_init(ser, tty);
-	tty->receive_room = N_TTY_BUF_SIZE;
+	tty->receive_room = 4096;
 	tty->disc_data = ser;
 	set_bit(TTY_DO_WRITE_WAKEUP, &tty->flags);
 	rtnl_lock();
@@ -380,6 +366,7 @@ static void ldisc_close(struct tty_struct *tty)
 /* The line discipline structure. */
 static struct tty_ldisc_ops caif_ldisc = {
 	.owner =	THIS_MODULE,
+	.num =		N_CAIF,
 	.name =		"n_caif",
 	.open =		ldisc_open,
 	.close =	ldisc_close,
@@ -429,7 +416,7 @@ static int __init caif_ser_init(void)
 {
 	int ret;
 
-	ret = tty_register_ldisc(N_CAIF, &caif_ldisc);
+	ret = tty_register_ldisc(&caif_ldisc);
 	if (ret < 0)
 		pr_err("cannot register CAIF ldisc=%d err=%d\n", N_CAIF, ret);
 
@@ -444,7 +431,7 @@ static void __exit caif_ser_exit(void)
 	spin_unlock(&ser_lock);
 	ser_release(NULL);
 	cancel_work_sync(&ser_release_work);
-	tty_unregister_ldisc(N_CAIF);
+	tty_unregister_ldisc(&caif_ldisc);
 	debugfs_remove_recursive(debugfsdir);
 }
 

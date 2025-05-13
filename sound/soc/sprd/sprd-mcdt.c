@@ -949,8 +949,7 @@ static int sprd_mcdt_probe(struct platform_device *pdev)
 	if (!mcdt)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mcdt->base = devm_ioremap_resource(&pdev->dev, res);
+	mcdt->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(mcdt->base))
 		return PTR_ERR(mcdt->base);
 
@@ -974,7 +973,7 @@ static int sprd_mcdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sprd_mcdt_remove(struct platform_device *pdev)
+static void sprd_mcdt_remove(struct platform_device *pdev)
 {
 	struct sprd_mcdt_chan *chan, *temp;
 
@@ -984,8 +983,6 @@ static int sprd_mcdt_remove(struct platform_device *pdev)
 		list_del(&chan->list);
 
 	mutex_unlock(&sprd_mcdt_list_mutex);
-
-	return 0;
 }
 
 static const struct of_device_id sprd_mcdt_of_match[] = {

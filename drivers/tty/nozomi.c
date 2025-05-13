@@ -65,23 +65,7 @@ do {							\
 #define DBG3(args...) DBG_(0x04, ##args)
 #define DBG4(args...) DBG_(0x08, ##args)
 
-/* TODO: rewrite to optimize macros... */
-
 #define TMP_BUF_MAX 256
-
-#define DUMP(buf__, len__)						\
-	do {								\
-		char tbuf[TMP_BUF_MAX] = {0};				\
-		if (len__ > 1) {					\
-			u32 data_len = min_t(u32, len__, TMP_BUF_MAX);	\
-			strscpy(tbuf, buf__, data_len);			\
-			if (tbuf[data_len - 2] == '\r')			\
-				tbuf[data_len - 2] = 'r';		\
-			DBG1("SENDING: '%s' (%d+n)", tbuf, len__);	\
-		} else {						\
-			DBG1("SENDING: '%s' (%d)", tbuf, len__);	\
-		}							\
-	} while (0)
 
 /*    Defines */
 #define NOZOMI_NAME		"nozomi"
@@ -754,8 +738,6 @@ static int send_data(enum port_type index, struct nozomi *dc)
 		return 0;
 	}
 
-	/* DUMP(buf, size); */
-
 	/* Write length + data */
 	write_mem32(addr, (u32 *) &size, 4);
 	write_mem32(addr + 4, (u32 *) dc->send_buf, size);
@@ -801,11 +783,10 @@ static int receive_data(enum port_type index, struct nozomi *dc)
 			tty_insert_flip_char(&port->port, buf[0], TTY_NORMAL);
 			size = 0;
 		} else if (size < RECEIVE_BUF_MAX) {
-			size -= tty_insert_flip_string(&port->port,
-					(char *)buf, size);
+			size -= tty_insert_flip_string(&port->port, buf, size);
 		} else {
-			i = tty_insert_flip_string(&port->port,
-					(char *)buf, RECEIVE_BUF_MAX);
+			i = tty_insert_flip_string(&port->port, buf,
+						   RECEIVE_BUF_MAX);
 			size -= i;
 			offset += i;
 		}
@@ -1599,18 +1580,18 @@ static void ntty_hangup(struct tty_struct *tty)
  * called when the userspace process writes to the tty (/dev/noz*).
  * Data is inserted into a fifo, which is then read and transferred to the modem.
  */
-static int ntty_write(struct tty_struct *tty, const unsigned char *buffer,
-		      int count)
+static ssize_t ntty_write(struct tty_struct *tty, const u8 *buffer,
+			  size_t count)
 {
-	int rval = -EINVAL;
 	struct nozomi *dc = get_dc_by_tty(tty);
 	struct port *port = tty->driver_data;
 	unsigned long flags;
+	size_t rval;
 
 	if (!dc || !port)
 		return -ENODEV;
 
-	rval = kfifo_in(&port->fifo_ul, (unsigned char *)buffer, count);
+	rval = kfifo_in(&port->fifo_ul, buffer, count);
 
 	spin_lock_irqsave(&dc->spin_mutex, flags);
 	/* CTS is only valid on the modem channel */
@@ -1639,10 +1620,10 @@ static int ntty_write(struct tty_struct *tty, const unsigned char *buffer,
  * If the port is unplugged report lots of room and let the bits
  * dribble away so we don't block anything.
  */
-static int ntty_write_room(struct tty_struct *tty)
+static unsigned int ntty_write_room(struct tty_struct *tty)
 {
 	struct port *port = tty->driver_data;
-	int room = 4096;
+	unsigned int room = 4096;
 	const struct nozomi *dc = get_dc_by_tty(tty);
 
 	if (dc)
@@ -1779,20 +1760,15 @@ static void ntty_throttle(struct tty_struct *tty)
 }
 
 /* Returns number of chars in buffer, called by tty layer */
-static s32 ntty_chars_in_buffer(struct tty_struct *tty)
+static unsigned int ntty_chars_in_buffer(struct tty_struct *tty)
 {
 	struct port *port = tty->driver_data;
 	struct nozomi *dc = get_dc_by_tty(tty);
-	s32 rval = 0;
 
-	if (unlikely(!dc || !port)) {
-		goto exit_in_buffer;
-	}
+	if (unlikely(!dc || !port))
+		return 0;
 
-	rval = kfifo_len(&port->fifo_ul);
-
-exit_in_buffer:
-	return rval;
+	return kfifo_len(&port->fifo_ul);
 }
 
 static const struct tty_port_operations noz_tty_port_ops = {
@@ -1829,16 +1805,16 @@ static __init int nozomi_init(void)
 {
 	int ret;
 
-	ntty_driver = alloc_tty_driver(NTTY_TTY_MAXMINORS);
-	if (!ntty_driver)
-		return -ENOMEM;
+	ntty_driver = tty_alloc_driver(NTTY_TTY_MAXMINORS, TTY_DRIVER_REAL_RAW |
+			TTY_DRIVER_DYNAMIC_DEV);
+	if (IS_ERR(ntty_driver))
+		return PTR_ERR(ntty_driver);
 
 	ntty_driver->driver_name = NOZOMI_NAME_TTY;
 	ntty_driver->name = "noz";
 	ntty_driver->major = 0;
 	ntty_driver->type = TTY_DRIVER_TYPE_SERIAL;
 	ntty_driver->subtype = SERIAL_TYPE_NORMAL;
-	ntty_driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
 	ntty_driver->init_termios = tty_std_termios;
 	ntty_driver->init_termios.c_cflag = B115200 | CS8 | CREAD | \
 						HUPCL | CLOCAL;
@@ -1862,7 +1838,7 @@ static __init int nozomi_init(void)
 unr_tty:
 	tty_unregister_driver(ntty_driver);
 free_tty:
-	put_tty_driver(ntty_driver);
+	tty_driver_kref_put(ntty_driver);
 	return ret;
 }
 
@@ -1870,7 +1846,7 @@ static __exit void nozomi_exit(void)
 {
 	pci_unregister_driver(&nozomi_driver);
 	tty_unregister_driver(ntty_driver);
-	put_tty_driver(ntty_driver);
+	tty_driver_kref_put(ntty_driver);
 }
 
 module_init(nozomi_init);

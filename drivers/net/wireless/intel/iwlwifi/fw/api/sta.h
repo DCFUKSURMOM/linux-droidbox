@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
- * Copyright (C) 2012-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2012-2014, 2018-2021, 2023 Intel Corporation
  * Copyright (C) 2013-2014 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -28,6 +28,8 @@
  * @STA_FLG_MAX_AGG_SIZE_256K: maximal size for A-MPDU (256k supported)
  * @STA_FLG_MAX_AGG_SIZE_512K: maximal size for A-MPDU (512k supported)
  * @STA_FLG_MAX_AGG_SIZE_1024K: maximal size for A-MPDU (1024k supported)
+ * @STA_FLG_MAX_AGG_SIZE_2M: maximal size for A-MPDU (2M supported)
+ * @STA_FLG_MAX_AGG_SIZE_4M: maximal size for A-MPDU (4M supported)
  * @STA_FLG_AGG_MPDU_DENS_MSK: maximal MPDU density for Tx aggregation
  * @STA_FLG_FAT_EN_MSK: support for channel width (for Tx). This flag is
  *	initialised by driver and can be updated by fw upon reception of
@@ -107,6 +109,7 @@ enum iwl_sta_flags {
  * @STA_KEY_FLG_EN_MSK: mask for encryption algorithmi value
  * @STA_KEY_FLG_WEP_KEY_MAP: wep is either a group key (0 - legacy WEP) or from
  *	station info array (1 - n 1X mode)
+ * @STA_KEY_FLG_AMSDU_SPP: SPP (signaling and payload protected) A-MSDU
  * @STA_KEY_FLG_KEYID_MSK: the index of the key
  * @STA_KEY_FLG_KEYID_POS: key index bit position
  * @STA_KEY_NOT_VALID: key is invalid
@@ -127,6 +130,7 @@ enum iwl_sta_key_flag {
 	STA_KEY_FLG_EN_MSK		= (7 << 0),
 
 	STA_KEY_FLG_WEP_KEY_MAP		= BIT(3),
+	STA_KEY_FLG_AMSDU_SPP		= BIT(7),
 	STA_KEY_FLG_KEYID_POS		 = 8,
 	STA_KEY_FLG_KEYID_MSK		= (3 << STA_KEY_FLG_KEYID_POS),
 	STA_KEY_NOT_VALID		= BIT(11),
@@ -187,6 +191,7 @@ enum iwl_sta_sleep_flag {
 #define STA_KEY_IDX_INVALID (0xff)
 #define STA_KEY_MAX_DATA_KEY_NUM (4)
 #define IWL_MAX_GLOBAL_KEYS (4)
+#define IWL_MAX_NUM_IGTKS 2
 #define STA_KEY_LEN_WEP40 (5)
 #define STA_KEY_LEN_WEP104 (13)
 
@@ -384,13 +389,17 @@ struct iwl_mvm_add_sta_key_cmd_v1 {
  * @rx_mic_key: TKIP RX unicast or multicast key
  * @tx_mic_key: TKIP TX key
  * @transmit_seq_cnt: TSC, transmit packet number
+ *
+ * Note: This is used for both v2 and v3, the difference being
+ * in the way the common.rx_secur_seq_cnt is used, in v2 that's
+ * the strange hole format, in v3 it's just a u64.
  */
 struct iwl_mvm_add_sta_key_cmd {
 	struct iwl_mvm_add_sta_key_common common;
 	__le64 rx_mic_key;
 	__le64 tx_mic_key;
 	__le64 transmit_seq_cnt;
-} __packed; /* ADD_MODIFY_STA_KEY_API_S_VER_2 */
+} __packed; /* ADD_MODIFY_STA_KEY_API_S_VER_2, ADD_MODIFY_STA_KEY_API_S_VER_3 */
 
 /**
  * enum iwl_mvm_add_sta_rsp_status - status in the response to ADD_STA command
@@ -471,7 +480,7 @@ struct iwl_mvm_wep_key_cmd {
 	u8 decryption_type;
 	u8 flags;
 	u8 reserved;
-	struct iwl_mvm_wep_key wep_key[0];
+	struct iwl_mvm_wep_key wep_key[];
 } __packed; /* SEC_CURR_WEP_KEY_CMD_API_S_VER_2 */
 
 /**

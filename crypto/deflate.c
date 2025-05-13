@@ -39,24 +39,20 @@ struct deflate_ctx {
 	struct z_stream_s decomp_stream;
 };
 
-static int deflate_comp_init(struct deflate_ctx *ctx, int format)
+static int deflate_comp_init(struct deflate_ctx *ctx)
 {
 	int ret = 0;
 	struct z_stream_s *stream = &ctx->comp_stream;
 
 	stream->workspace = vzalloc(zlib_deflate_workspacesize(
-				    MAX_WBITS, MAX_MEM_LEVEL));
+				    -DEFLATE_DEF_WINBITS, MAX_MEM_LEVEL));
 	if (!stream->workspace) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	if (format)
-		ret = zlib_deflateInit(stream, 3);
-	else
-		ret = zlib_deflateInit2(stream, DEFLATE_DEF_LEVEL, Z_DEFLATED,
-					-DEFLATE_DEF_WINBITS,
-					DEFLATE_DEF_MEMLEVEL,
-					Z_DEFAULT_STRATEGY);
+	ret = zlib_deflateInit2(stream, DEFLATE_DEF_LEVEL, Z_DEFLATED,
+				-DEFLATE_DEF_WINBITS, DEFLATE_DEF_MEMLEVEL,
+				Z_DEFAULT_STRATEGY);
 	if (ret != Z_OK) {
 		ret = -EINVAL;
 		goto out_free;
@@ -68,7 +64,7 @@ out_free:
 	goto out;
 }
 
-static int deflate_decomp_init(struct deflate_ctx *ctx, int format)
+static int deflate_decomp_init(struct deflate_ctx *ctx)
 {
 	int ret = 0;
 	struct z_stream_s *stream = &ctx->decomp_stream;
@@ -78,10 +74,7 @@ static int deflate_decomp_init(struct deflate_ctx *ctx, int format)
 		ret = -ENOMEM;
 		goto out;
 	}
-	if (format)
-		ret = zlib_inflateInit(stream);
-	else
-		ret = zlib_inflateInit2(stream, -DEFLATE_DEF_WINBITS);
+	ret = zlib_inflateInit2(stream, -DEFLATE_DEF_WINBITS);
 	if (ret != Z_OK) {
 		ret = -EINVAL;
 		goto out_free;
@@ -105,21 +98,21 @@ static void deflate_decomp_exit(struct deflate_ctx *ctx)
 	vfree(ctx->decomp_stream.workspace);
 }
 
-static int __deflate_init(void *ctx, int format)
+static int __deflate_init(void *ctx)
 {
 	int ret;
 
-	ret = deflate_comp_init(ctx, format);
+	ret = deflate_comp_init(ctx);
 	if (ret)
 		goto out;
-	ret = deflate_decomp_init(ctx, format);
+	ret = deflate_decomp_init(ctx);
 	if (ret)
 		deflate_comp_exit(ctx);
 out:
 	return ret;
 }
 
-static void *gen_deflate_alloc_ctx(struct crypto_scomp *tfm, int format)
+static void *deflate_alloc_ctx(void)
 {
 	struct deflate_ctx *ctx;
 	int ret;
@@ -128,7 +121,7 @@ static void *gen_deflate_alloc_ctx(struct crypto_scomp *tfm, int format)
 	if (!ctx)
 		return ERR_PTR(-ENOMEM);
 
-	ret = __deflate_init(ctx, format);
+	ret = __deflate_init(ctx);
 	if (ret) {
 		kfree(ctx);
 		return ERR_PTR(ret);
@@ -137,40 +130,16 @@ static void *gen_deflate_alloc_ctx(struct crypto_scomp *tfm, int format)
 	return ctx;
 }
 
-static void *deflate_alloc_ctx(struct crypto_scomp *tfm)
-{
-	return gen_deflate_alloc_ctx(tfm, 0);
-}
-
-static void *zlib_deflate_alloc_ctx(struct crypto_scomp *tfm)
-{
-	return gen_deflate_alloc_ctx(tfm, 1);
-}
-
-static int deflate_init(struct crypto_tfm *tfm)
-{
-	struct deflate_ctx *ctx = crypto_tfm_ctx(tfm);
-
-	return __deflate_init(ctx, 0);
-}
-
 static void __deflate_exit(void *ctx)
 {
 	deflate_comp_exit(ctx);
 	deflate_decomp_exit(ctx);
 }
 
-static void deflate_free_ctx(struct crypto_scomp *tfm, void *ctx)
+static void deflate_free_ctx(void *ctx)
 {
 	__deflate_exit(ctx);
 	kfree_sensitive(ctx);
-}
-
-static void deflate_exit(struct crypto_tfm *tfm)
-{
-	struct deflate_ctx *ctx = crypto_tfm_ctx(tfm);
-
-	__deflate_exit(ctx);
 }
 
 static int __deflate_compress(const u8 *src, unsigned int slen,
@@ -200,14 +169,6 @@ static int __deflate_compress(const u8 *src, unsigned int slen,
 	*dlen = stream->total_out;
 out:
 	return ret;
-}
-
-static int deflate_compress(struct crypto_tfm *tfm, const u8 *src,
-			    unsigned int slen, u8 *dst, unsigned int *dlen)
-{
-	struct deflate_ctx *dctx = crypto_tfm_ctx(tfm);
-
-	return __deflate_compress(src, slen, dst, dlen, dctx);
 }
 
 static int deflate_scompress(struct crypto_scomp *tfm, const u8 *src,
@@ -258,14 +219,6 @@ out:
 	return ret;
 }
 
-static int deflate_decompress(struct crypto_tfm *tfm, const u8 *src,
-			      unsigned int slen, u8 *dst, unsigned int *dlen)
-{
-	struct deflate_ctx *dctx = crypto_tfm_ctx(tfm);
-
-	return __deflate_decompress(src, slen, dst, dlen, dctx);
-}
-
 static int deflate_sdecompress(struct crypto_scomp *tfm, const u8 *src,
 			       unsigned int slen, u8 *dst, unsigned int *dlen,
 			       void *ctx)
@@ -273,20 +226,7 @@ static int deflate_sdecompress(struct crypto_scomp *tfm, const u8 *src,
 	return __deflate_decompress(src, slen, dst, dlen, ctx);
 }
 
-static struct crypto_alg alg = {
-	.cra_name		= "deflate",
-	.cra_driver_name	= "deflate-generic",
-	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
-	.cra_ctxsize		= sizeof(struct deflate_ctx),
-	.cra_module		= THIS_MODULE,
-	.cra_init		= deflate_init,
-	.cra_exit		= deflate_exit,
-	.cra_u			= { .compress = {
-	.coa_compress 		= deflate_compress,
-	.coa_decompress  	= deflate_decompress } }
-};
-
-static struct scomp_alg scomp[] = { {
+static struct scomp_alg scomp = {
 	.alloc_ctx		= deflate_alloc_ctx,
 	.free_ctx		= deflate_free_ctx,
 	.compress		= deflate_scompress,
@@ -296,39 +236,16 @@ static struct scomp_alg scomp[] = { {
 		.cra_driver_name = "deflate-scomp",
 		.cra_module	 = THIS_MODULE,
 	}
-}, {
-	.alloc_ctx		= zlib_deflate_alloc_ctx,
-	.free_ctx		= deflate_free_ctx,
-	.compress		= deflate_scompress,
-	.decompress		= deflate_sdecompress,
-	.base			= {
-		.cra_name	= "zlib-deflate",
-		.cra_driver_name = "zlib-deflate-scomp",
-		.cra_module	 = THIS_MODULE,
-	}
-} };
+};
 
 static int __init deflate_mod_init(void)
 {
-	int ret;
-
-	ret = crypto_register_alg(&alg);
-	if (ret)
-		return ret;
-
-	ret = crypto_register_scomps(scomp, ARRAY_SIZE(scomp));
-	if (ret) {
-		crypto_unregister_alg(&alg);
-		return ret;
-	}
-
-	return ret;
+	return crypto_register_scomp(&scomp);
 }
 
 static void __exit deflate_mod_fini(void)
 {
-	crypto_unregister_alg(&alg);
-	crypto_unregister_scomps(scomp, ARRAY_SIZE(scomp));
+	crypto_unregister_scomp(&scomp);
 }
 
 subsys_initcall(deflate_mod_init);
@@ -338,3 +255,4 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Deflate Compression Algorithm for IPCOMP");
 MODULE_AUTHOR("James Morris <jmorris@intercode.com.au>");
 MODULE_ALIAS_CRYPTO("deflate");
+MODULE_ALIAS_CRYPTO("deflate-generic");

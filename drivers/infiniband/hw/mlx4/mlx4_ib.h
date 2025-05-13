@@ -38,6 +38,7 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/idr.h>
+#include <linux/notifier.h>
 
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_umem.h>
@@ -601,7 +602,7 @@ struct mlx4_ib_counters {
 #define MLX4_DIAG_COUNTERS_TYPES 2
 
 struct mlx4_ib_diag_counters {
-	const char **name;
+	struct rdma_stat_desc *descs;
 	u32 *offset;
 	u32 num_counters;
 };
@@ -644,6 +645,7 @@ struct mlx4_ib_dev {
 	spinlock_t		reset_flow_resource_lock;
 	struct list_head		qp_list;
 	struct mlx4_ib_diag_counters diag_counters[MLX4_DIAG_COUNTERS_TYPES];
+	struct notifier_block	mlx_nb;
 };
 
 struct ib_event_work {
@@ -664,6 +666,9 @@ struct mlx4_uverbs_ex_query_device {
 	__u32 comp_mask;
 	__u32 reserved;
 };
+
+/* 4k - 4G */
+#define MLX4_PAGE_SIZE_SUPPORTED	((unsigned long)GENMASK_ULL(31, 12))
 
 static inline struct mlx4_ib_dev *to_mdev(struct ib_device *ibdev)
 {
@@ -765,7 +770,7 @@ int mlx4_ib_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
 int mlx4_ib_modify_cq(struct ib_cq *cq, u16 cq_count, u16 cq_period);
 int mlx4_ib_resize_cq(struct ib_cq *ibcq, int entries, struct ib_udata *udata);
 int mlx4_ib_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		      struct ib_udata *udata);
+		      struct uverbs_attr_bundle *attrs);
 int mlx4_ib_destroy_cq(struct ib_cq *cq, struct ib_udata *udata);
 int mlx4_ib_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *wc);
 int mlx4_ib_arm_cq(struct ib_cq *cq, enum ib_cq_notify_flags flags);
@@ -792,9 +797,8 @@ void mlx4_ib_free_srq_wqe(struct mlx4_ib_srq *srq, int wqe_index);
 int mlx4_ib_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
 			  const struct ib_recv_wr **bad_wr);
 
-struct ib_qp *mlx4_ib_create_qp(struct ib_pd *pd,
-				struct ib_qp_init_attr *init_attr,
-				struct ib_udata *udata);
+int mlx4_ib_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *init_attr,
+		      struct ib_udata *udata);
 int mlx4_ib_destroy_qp(struct ib_qp *qp, struct ib_udata *udata);
 void mlx4_ib_drain_sq(struct ib_qp *qp);
 void mlx4_ib_drain_rq(struct ib_qp *qp);
@@ -935,7 +939,24 @@ mlx4_ib_destroy_rwq_ind_table(struct ib_rwq_ind_table *wq_ind_table)
 {
 	return 0;
 }
-int mlx4_ib_umem_calc_optimal_mtt_size(struct ib_umem *umem, u64 start_va,
-				       int *num_of_mtts);
+static inline int mlx4_ib_umem_calc_optimal_mtt_size(struct ib_umem *umem,
+						     u64 start,
+						     int *num_of_mtts)
+{
+	unsigned long pg_sz;
+
+	pg_sz = ib_umem_find_best_pgsz(umem, MLX4_PAGE_SIZE_SUPPORTED, start);
+	if (!pg_sz)
+		return -EOPNOTSUPP;
+
+	*num_of_mtts = ib_umem_num_dma_blocks(umem, pg_sz);
+	return order_base_2(pg_sz);
+}
+
+int mlx4_ib_cm_init(void);
+void mlx4_ib_cm_destroy(void);
+
+int mlx4_ib_qp_event_init(void);
+void mlx4_ib_qp_event_cleanup(void);
 
 #endif /* MLX4_IB_H */

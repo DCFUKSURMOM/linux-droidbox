@@ -71,7 +71,7 @@ media maintainers do the review.
 
 The media maintainers that work on specific areas of the subsystem are:
 
-- Digital TV and remote controllers:
+- Remote Controllers (infrared):
     Sean Young <sean@mess.org>
 
 - HDMI CEC:
@@ -116,7 +116,7 @@ CEC drivers		``cec-compliance``
 .. [3] The ``v4l2-compliance`` also covers the media controller usage inside
        V4L2 drivers.
 
-Other compilance tools are under development to check other parts of the
+Other compliance tools are under development to check other parts of the
 subsystem.
 
 Those tests need to pass before the patches go upstream.

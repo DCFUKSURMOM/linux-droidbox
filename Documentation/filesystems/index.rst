@@ -29,11 +29,13 @@ algorithms work.
    fiemap
    files
    locks
-   mandatory-locking
+   multigrain-ts
    mount_api
    quota
    seq_file
    sharedsubtree
+   idmappings
+   iomap/index
 
    automount-support
 
@@ -50,6 +52,7 @@ filesystem implementations.
 .. toctree::
    :maxdepth: 2
 
+   buffer
    journalling
    fscrypt
    fsverity
@@ -69,14 +72,15 @@ Documentation for filesystem implementations.
    afs
    autofs
    autofs-mount-control
+   bcachefs/index
    befs
    bfs
    btrfs
-   cifs/cifsroot
    ceph
    coda
    configfs
    cramfs
+   dax
    debugfs
    dlmfs
    ecryptfs
@@ -94,11 +98,12 @@ Documentation for filesystem implementations.
    hpfs
    fuse
    fuse-io
+   fuse-io-uring
    inotify
    isofs
    nilfs2
    nfs/index
-   ntfs
+   ntfs3
    ocfs2
    ocfs2-online-filecheck
    omfs
@@ -109,16 +114,15 @@ Documentation for filesystem implementations.
    ramfs-rootfs-initramfs
    relay
    romfs
+   smb/index
    spufs/index
    squashfs
    sysfs
-   sysv-fs
    tmpfs
    ubifs
    ubifs-authentication
    udf
    virtiofs
    vfat
-   xfs-delayed-logging-design
-   xfs-self-describing-metadata
+   xfs/index
    zonefs

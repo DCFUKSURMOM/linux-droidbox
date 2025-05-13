@@ -221,7 +221,7 @@ static int ir_mce_kbd_decode(struct rc_dev *dev, struct ir_raw_event ev)
 	struct lirc_scancode lsc = {};
 
 	if (!is_timing_event(ev)) {
-		if (ev.reset)
+		if (ev.overflow)
 			data->state = STATE_INACTIVE;
 		return 0;
 	}
@@ -324,7 +324,7 @@ again:
 					msecs_to_jiffies(100);
 				mod_timer(&data->rx_timeout, jiffies + delay);
 			} else {
-				del_timer(&data->rx_timeout);
+				timer_delete(&data->rx_timeout);
 			}
 			/* Pass data to keyboard buffer parser */
 			ir_mce_kbd_process_keyboard_data(dev, scancode);
@@ -372,7 +372,7 @@ static int ir_mce_kbd_unregister(struct rc_dev *dev)
 {
 	struct mce_kbd_dec *mce_kbd = &dev->raw->mce_kbd;
 
-	del_timer_sync(&mce_kbd->rx_timeout);
+	timer_delete_sync(&mce_kbd->rx_timeout);
 
 	return 0;
 }

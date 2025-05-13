@@ -16,9 +16,12 @@
 #define LWTUNNEL_STATE_INPUT_REDIRECT	BIT(1)
 #define LWTUNNEL_STATE_XMIT_REDIRECT	BIT(2)
 
+/* LWTUNNEL_XMIT_CONTINUE should be distinguishable from dst_output return
+ * values (NET_XMIT_xxx and NETDEV_TX_xxx in linux/netdevice.h) for safety.
+ */
 enum {
 	LWTUNNEL_XMIT_DONE,
-	LWTUNNEL_XMIT_CONTINUE,
+	LWTUNNEL_XMIT_CONTINUE = 0x100,
 };
 
 
@@ -51,6 +54,9 @@ struct lwtunnel_encap_ops {
 };
 
 #ifdef CONFIG_LWTUNNEL
+
+DECLARE_STATIC_KEY_FALSE(nf_hooks_lwtunnel_enabled);
+
 void lwtstate_free(struct lwtunnel_state *lws);
 
 static inline struct lwtunnel_state *
@@ -110,9 +116,11 @@ int lwtunnel_encap_add_ops(const struct lwtunnel_encap_ops *op,
 int lwtunnel_encap_del_ops(const struct lwtunnel_encap_ops *op,
 			   unsigned int num);
 int lwtunnel_valid_encap_type(u16 encap_type,
-			      struct netlink_ext_ack *extack);
+			      struct netlink_ext_ack *extack,
+			      bool rtnl_is_held);
 int lwtunnel_valid_encap_type_attr(struct nlattr *attr, int len,
-				   struct netlink_ext_ack *extack);
+				   struct netlink_ext_ack *extack,
+				   bool rtnl_is_held);
 int lwtunnel_build_state(struct net *net, u16 encap_type,
 			 struct nlattr *encap,
 			 unsigned int family, const void *cfg,
@@ -195,13 +203,15 @@ static inline int lwtunnel_encap_del_ops(const struct lwtunnel_encap_ops *op,
 }
 
 static inline int lwtunnel_valid_encap_type(u16 encap_type,
-					    struct netlink_ext_ack *extack)
+					    struct netlink_ext_ack *extack,
+					    bool rtnl_is_held)
 {
 	NL_SET_ERR_MSG(extack, "CONFIG_LWTUNNEL is not enabled in this kernel");
 	return -EOPNOTSUPP;
 }
 static inline int lwtunnel_valid_encap_type_attr(struct nlattr *attr, int len,
-						 struct netlink_ext_ack *extack)
+						 struct netlink_ext_ack *extack,
+						 bool rtnl_is_held)
 {
 	/* return 0 since we are not walking attr looking for
 	 * RTA_ENCAP_TYPE attribute on nexthops.

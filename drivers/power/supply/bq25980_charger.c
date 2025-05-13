@@ -764,7 +764,7 @@ static int bq25980_get_charger_property(struct power_supply *psy,
 		if (!state.ce)
 			val->intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
 		else if (state.bypass)
-			val->intval = POWER_SUPPLY_CHARGE_TYPE_FAST;
+			val->intval = POWER_SUPPLY_CHARGE_TYPE_BYPASS;
 		else if (!state.bypass)
 			val->intval = POWER_SUPPLY_CHARGE_TYPE_STANDARD;
 		break;
@@ -932,7 +932,7 @@ static const struct regmap_config bq25980_regmap_config = {
 	.max_register = BQ25980_CHRGR_CTRL_6,
 	.reg_defaults	= bq25980_reg_defs,
 	.num_reg_defaults = ARRAY_SIZE(bq25980_reg_defs),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = bq25980_is_volatile_reg,
 };
 
@@ -943,7 +943,7 @@ static const struct regmap_config bq25975_regmap_config = {
 	.max_register = BQ25980_CHRGR_CTRL_6,
 	.reg_defaults	= bq25975_reg_defs,
 	.num_reg_defaults = ARRAY_SIZE(bq25975_reg_defs),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = bq25980_is_volatile_reg,
 };
 
@@ -954,7 +954,7 @@ static const struct regmap_config bq25960_regmap_config = {
 	.max_register = BQ25980_CHRGR_CTRL_6,
 	.reg_defaults	= bq25960_reg_defs,
 	.num_reg_defaults = ARRAY_SIZE(bq25960_reg_defs),
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.volatile_reg = bq25980_is_volatile_reg,
 };
 
@@ -1057,7 +1057,7 @@ static int bq25980_power_supply_init(struct bq25980_device *bq,
 							struct device *dev)
 {
 	struct power_supply_config psy_cfg = { .drv_data = bq,
-						.of_node = dev->of_node, };
+						.fwnode = dev_fwnode(dev), };
 
 	psy_cfg.supplied_to = bq25980_charger_supplied_to;
 	psy_cfg.num_supplicants = ARRAY_SIZE(bq25980_charger_supplied_to);
@@ -1079,7 +1079,7 @@ static int bq25980_power_supply_init(struct bq25980_device *bq,
 
 static int bq25980_hw_init(struct bq25980_device *bq)
 {
-	struct power_supply_battery_info bat_info = { };
+	struct power_supply_battery_info *bat_info;
 	int wd_reg_val = BQ25980_WATCHDOG_DIS;
 	int wd_max_val = BQ25980_NUM_WD_VAL - 1;
 	int ret = 0;
@@ -1112,8 +1112,8 @@ static int bq25980_hw_init(struct bq25980_device *bq)
 		return -EINVAL;
 	}
 
-	bq->init_data.ichg_max = bat_info.constant_charge_current_max_ua;
-	bq->init_data.vreg_max = bat_info.constant_charge_voltage_max_uv;
+	bq->init_data.ichg_max = bat_info->constant_charge_current_max_ua;
+	bq->init_data.vreg_max = bat_info->constant_charge_voltage_max_uv;
 
 	if (bq->state.bypass) {
 		ret = regmap_update_bits(bq->regmap, BQ25980_CHRGR_CTRL_2,
@@ -1207,9 +1207,9 @@ static int bq25980_parse_dt(struct bq25980_device *bq)
 	return 0;
 }
 
-static int bq25980_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int bq25980_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct device *dev = &client->dev;
 	struct bq25980_device *bq;
 	int ret;
@@ -1223,7 +1223,7 @@ static int bq25980_probe(struct i2c_client *client,
 
 	mutex_init(&bq->lock);
 
-	strncpy(bq->model_name, id->name, I2C_NAME_SIZE);
+	strscpy(bq->model_name, id->name, sizeof(bq->model_name));
 	bq->chip_info = &bq25980_chip_info_tbl[id->driver_data];
 
 	bq->regmap = devm_regmap_init_i2c(client,

@@ -72,13 +72,13 @@ static int bd9571mwv_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return val & BIT(offset);
 }
 
-static void bd9571mwv_gpio_set(struct gpio_chip *chip, unsigned int offset,
+static int bd9571mwv_gpio_set(struct gpio_chip *chip, unsigned int offset,
 			      int value)
 {
 	struct bd9571mwv_gpio *gpio = gpiochip_get_data(chip);
 
-	regmap_update_bits(gpio->regmap, BD9571MWV_GPIO_OUT,
-			   BIT(offset), value ? BIT(offset) : 0);
+	return regmap_update_bits(gpio->regmap, BD9571MWV_GPIO_OUT,
+				  BIT(offset), value ? BIT(offset) : 0);
 }
 
 static const struct gpio_chip template_chip = {
@@ -88,7 +88,7 @@ static const struct gpio_chip template_chip = {
 	.direction_input	= bd9571mwv_gpio_direction_input,
 	.direction_output	= bd9571mwv_gpio_direction_output,
 	.get			= bd9571mwv_gpio_get,
-	.set			= bd9571mwv_gpio_set,
+	.set_rv			= bd9571mwv_gpio_set,
 	.base			= -1,
 	.ngpio			= 2,
 	.can_sleep		= true,
@@ -97,25 +97,16 @@ static const struct gpio_chip template_chip = {
 static int bd9571mwv_gpio_probe(struct platform_device *pdev)
 {
 	struct bd9571mwv_gpio *gpio;
-	int ret;
 
 	gpio = devm_kzalloc(&pdev->dev, sizeof(*gpio), GFP_KERNEL);
 	if (!gpio)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, gpio);
-
 	gpio->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	gpio->chip = template_chip;
 	gpio->chip.parent = pdev->dev.parent;
 
-	ret = devm_gpiochip_add_data(&pdev->dev, &gpio->chip, gpio);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "Could not register gpiochip, %d\n", ret);
-		return ret;
-	}
-
-	return 0;
+	return devm_gpiochip_add_data(&pdev->dev, &gpio->chip, gpio);
 }
 
 static const struct platform_device_id bd9571mwv_gpio_id_table[] = {

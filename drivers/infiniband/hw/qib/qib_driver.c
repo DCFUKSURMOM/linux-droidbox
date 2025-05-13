@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2021 Cornelis Networks. All rights reserved.
  * Copyright (c) 2013 Intel Corporation. All rights reserved.
  * Copyright (c) 2006, 2007, 2008, 2009 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
@@ -43,12 +44,6 @@
 
 #include "qib.h"
 
-/*
- * The size has to be longer than this string, so we can append
- * board/chip information to it in the init code.
- */
-const char ib_qib_version[] = QIB_DRIVER_VERSION "\n";
-
 DEFINE_MUTEX(qib_mutex);	/* general driver use */
 
 unsigned qib_ibmtu;
@@ -62,8 +57,8 @@ MODULE_PARM_DESC(compat_ddr_negotiate,
 		 "Attempt pre-IBTA 1.2 DDR speed negotiation");
 
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_AUTHOR("Intel <ibsupport@intel.com>");
-MODULE_DESCRIPTION("Intel IB driver");
+MODULE_AUTHOR("Cornelis <support@cornelisnetworks.com>");
+MODULE_DESCRIPTION("Cornelis IB driver");
 
 /*
  * QIB_PIO_MAXIBHDR is the max IB header size allowed for in our
@@ -773,7 +768,7 @@ int qib_reset_device(int unit)
 		ppd = dd->pport + pidx;
 		if (atomic_read(&ppd->led_override_timer_active)) {
 			/* Need to stop LED timer, _then_ shut off LEDs */
-			del_timer_sync(&ppd->led_override_timer);
+			timer_delete_sync(&ppd->led_override_timer);
 			atomic_set(&ppd->led_override_timer_active, 0);
 		}
 

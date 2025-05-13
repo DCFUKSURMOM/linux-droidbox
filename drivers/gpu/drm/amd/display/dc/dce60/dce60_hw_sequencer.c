@@ -29,8 +29,8 @@
 #include "dce60_hw_sequencer.h"
 
 #include "dce/dce_hwseq.h"
-#include "dce110/dce110_hw_sequencer.h"
-#include "dce100/dce100_hw_sequencer.h"
+#include "dce110/dce110_hwseq.h"
+#include "dce100/dce100_hwseq.h"
 
 /* include DCE6 register header files */
 #include "dce/dce_6_0_d.h"
@@ -428,5 +428,6 @@ void dce60_hw_sequencer_construct(struct dc *dc)
 	dc->hwss.pipe_control_lock = dce60_pipe_control_lock;
 	dc->hwss.prepare_bandwidth = dce100_prepare_bandwidth;
 	dc->hwss.optimize_bandwidth = dce100_optimize_bandwidth;
+	dc->hwss.clear_surface_dcc_and_tiling = dce100_reset_surface_dcc_and_tiling;
 }
 

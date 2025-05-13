@@ -273,7 +273,7 @@ static void __ad7879_disable(struct ad7879 *ts)
 		AD7879_PM(AD7879_PM_SHUTDOWN);
 	disable_irq(ts->irq);
 
-	if (del_timer_sync(&ts->timer))
+	if (timer_delete_sync(&ts->timer))
 		ad7879_ts_event_release(ts);
 
 	ad7879_write(ts, AD7879_REG_CTRL2, reg);
@@ -390,6 +390,12 @@ static struct attribute *ad7879_attributes[] = {
 static const struct attribute_group ad7879_attr_group = {
 	.attrs = ad7879_attributes,
 };
+
+const struct attribute_group *ad7879_groups[] = {
+	&ad7879_attr_group,
+	NULL
+};
+EXPORT_SYMBOL_GPL(ad7879_groups);
 
 #ifdef CONFIG_GPIOLIB
 static int ad7879_gpio_direction_input(struct gpio_chip *chip,
@@ -611,10 +617,6 @@ int ad7879_probe(struct device *dev, struct regmap *regmap,
 	}
 
 	__ad7879_disable(ts);
-
-	err = devm_device_add_group(dev, &ad7879_attr_group);
-	if (err)
-		return err;
 
 	err = ad7879_gpio_add(ts);
 	if (err)

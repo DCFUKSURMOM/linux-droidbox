@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0+
-/* vim: set ts=8 sw=8 noet tw=80 nowrap: */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -140,6 +139,11 @@ void device_write(const struct ni_device_routes *dR, FILE *fp)
 int main(void)
 {
 	FILE *fp = fopen("ni_values.py", "w");
+
+	if (fp == NULL) {
+		fprintf(stderr, "Could not open file!");
+		return -1;
+	}
 
 	/* write route register values */
 	fprintf(fp, "ni_route_values = {\n");

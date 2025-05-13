@@ -127,7 +127,7 @@ static int rt8515_led_flash_strobe_set(struct led_classdev_flash *fled,
 		mod_timer(&rt->powerdown_timer,
 			  jiffies + usecs_to_jiffies(timeout->val));
 	} else {
-		del_timer_sync(&rt->powerdown_timer);
+		timer_delete_sync(&rt->powerdown_timer);
 		/* Turn the LED off */
 		rt8515_gpio_led_off(rt);
 	}
@@ -367,15 +367,13 @@ static int rt8515_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rt8515_remove(struct platform_device *pdev)
+static void rt8515_remove(struct platform_device *pdev)
 {
 	struct rt8515 *rt = platform_get_drvdata(pdev);
 
 	rt8515_v4l2_flash_release(rt);
-	del_timer_sync(&rt->powerdown_timer);
+	timer_delete_sync(&rt->powerdown_timer);
 	mutex_destroy(&rt->lock);
-
-	return 0;
 }
 
 static const struct of_device_id rt8515_match[] = {

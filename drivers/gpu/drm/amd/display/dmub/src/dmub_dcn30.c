@@ -40,7 +40,10 @@
 
 const struct dmub_srv_common_regs dmub_srv_dcn30_regs = {
 #define DMUB_SR(reg) REG_OFFSET(reg),
-	{ DMUB_COMMON_REGS() },
+	{
+		DMUB_COMMON_REGS()
+		DMCUB_INTERNAL_REGS()
+	},
 #undef DMUB_SR
 
 #define DMUB_SF(reg, field) FD_MASK(reg, field),
@@ -121,7 +124,8 @@ void dmub_dcn30_setup_windows(struct dmub_srv *dmub,
 			      const struct dmub_window *cw3,
 			      const struct dmub_window *cw4,
 			      const struct dmub_window *cw5,
-			      const struct dmub_window *cw6)
+			      const struct dmub_window *cw6,
+			      const struct dmub_window *region6)
 {
 	union dmub_addr offset;
 

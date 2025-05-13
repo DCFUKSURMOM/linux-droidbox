@@ -352,7 +352,7 @@ static int sti_uniperiph_resume(struct snd_soc_component *component)
 	return ret;
 }
 
-static int sti_uniperiph_dai_probe(struct snd_soc_dai *dai)
+int sti_uniperiph_dai_probe(struct snd_soc_dai *dai)
 {
 	struct sti_uniperiph_data *priv = snd_soc_dai_get_drvdata(dai);
 	struct sti_uniperiph_dai *dai_data = &priv->dai_data;
@@ -369,14 +369,19 @@ static int sti_uniperiph_dai_probe(struct snd_soc_dai *dai)
 	return sti_uniperiph_dai_create_ctrl(dai);
 }
 
-static const struct snd_soc_dai_driver sti_uniperiph_dai_template = {
+static const struct snd_soc_dai_ops sti_uniperiph_dai_ops = {
 	.probe = sti_uniperiph_dai_probe,
+};
+
+static const struct snd_soc_dai_driver sti_uniperiph_dai_template = {
+	.ops = &sti_uniperiph_dai_ops,
 };
 
 static const struct snd_soc_component_driver sti_uniperiph_dai_component = {
 	.name = "sti_cpu_dai",
 	.suspend = sti_uniperiph_suspend,
-	.resume = sti_uniperiph_resume
+	.resume = sti_uniperiph_resume,
+	.legacy_dai_naming = 1,
 };
 
 static int sti_uniperiph_cpu_dai_of(struct device_node *node,
@@ -410,16 +415,8 @@ static int sti_uniperiph_cpu_dai_of(struct device_node *node,
 	*dai = sti_uniperiph_dai_template;
 	dai->name = dev_data->dai_names;
 
-	/* Get resources */
-	uni->mem_region = platform_get_resource(priv->pdev, IORESOURCE_MEM, 0);
-
-	if (!uni->mem_region) {
-		dev_err(dev, "Failed to get memory resource\n");
-		return -ENODEV;
-	}
-
-	uni->base = devm_ioremap_resource(dev, uni->mem_region);
-
+	/* Get resources and base address */
+	uni->base = devm_platform_get_and_ioremap_resource(priv->pdev, 0, &uni->mem_region);
 	if (IS_ERR(uni->base))
 		return PTR_ERR(uni->base);
 
@@ -464,10 +461,6 @@ static int sti_uniperiph_cpu_dai_of(struct device_node *node,
 	return 0;
 }
 
-static const struct snd_dmaengine_pcm_config dmaengine_pcm_config = {
-	.prepare_slave_config = snd_dmaengine_pcm_prepare_slave_config,
-};
-
 static int sti_uniperiph_probe(struct platform_device *pdev)
 {
 	struct sti_uniperiph_data *priv;
@@ -496,8 +489,7 @@ static int sti_uniperiph_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	return devm_snd_dmaengine_pcm_register(&pdev->dev,
-					       &dmaengine_pcm_config, 0);
+	return devm_snd_dmaengine_pcm_register(&pdev->dev, NULL, 0);
 }
 
 static struct platform_driver sti_uniperiph_driver = {

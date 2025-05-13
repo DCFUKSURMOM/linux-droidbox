@@ -13,8 +13,8 @@
 #include <linux/workqueue.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
+#include <linux/pm.h>
 #include <linux/power_supply.h>
-#include <linux/mfd/pcf50633/backlight.h>
 
 struct pcf50633;
 struct regmap;
@@ -41,8 +41,6 @@ struct pcf50633_platform_data {
 	void (*force_shutdown)(struct pcf50633 *);
 
 	u8 resumers[5];
-
-	struct pcf50633_bl_platform_data *backlight_data;
 };
 
 struct pcf50633_irq {
@@ -226,9 +224,6 @@ static inline struct pcf50633 *dev_to_pcf50633(struct device *dev)
 
 int pcf50633_irq_init(struct pcf50633 *pcf, int irq);
 void pcf50633_irq_free(struct pcf50633 *pcf);
-#ifdef CONFIG_PM
-int pcf50633_irq_suspend(struct pcf50633 *pcf);
-int pcf50633_irq_resume(struct pcf50633 *pcf);
-#endif
+extern const struct dev_pm_ops pcf50633_pm;
 
 #endif

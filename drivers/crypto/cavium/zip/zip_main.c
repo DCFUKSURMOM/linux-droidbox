@@ -55,6 +55,11 @@ static const struct pci_device_id zip_id_table[] = {
 	{ 0, }
 };
 
+static void zip_debugfs_init(void);
+static void zip_debugfs_exit(void);
+static int zip_register_compression_device(void);
+static void zip_unregister_compression_device(void);
+
 void zip_reg_write(u64 val, u64 __iomem *addr)
 {
 	writeq(val, addr);
@@ -235,6 +240,15 @@ static int zip_init_hw(struct zip_device *zip)
 	return 0;
 }
 
+static void zip_reset(struct zip_device *zip)
+{
+	union zip_cmd_ctl cmd_ctl;
+
+	cmd_ctl.u_reg64 = 0x0ull;
+	cmd_ctl.s.reset = 1;  /* Forces ZIP cores to do reset */
+	zip_reg_write(cmd_ctl.u_reg64, (zip->reg_base + ZIP_CMD_CTL));
+}
+
 static int zip_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct device *dev = &pdev->dev;
@@ -282,7 +296,20 @@ static int zip_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (err)
 		goto err_release_regions;
 
+	/* Register with the Kernel Crypto Interface */
+	err = zip_register_compression_device();
+	if (err < 0) {
+		zip_err("ZIP: Kernel Crypto Registration failed\n");
+		goto err_register;
+	}
+
+	/* comp-decomp statistics are handled with debugfs interface */
+	zip_debugfs_init();
+
 	return 0;
+
+err_register:
+	zip_reset(zip);
 
 err_release_regions:
 	if (zip->reg_base)
@@ -305,16 +332,17 @@ err_free_device:
 static void zip_remove(struct pci_dev *pdev)
 {
 	struct zip_device *zip = pci_get_drvdata(pdev);
-	union zip_cmd_ctl cmd_ctl;
 	int q = 0;
 
 	if (!zip)
 		return;
 
+	zip_debugfs_exit();
+
+	zip_unregister_compression_device();
+
 	if (zip->reg_base) {
-		cmd_ctl.u_reg64 = 0x0ull;
-		cmd_ctl.s.reset = 1;  /* Forces ZIP cores to do reset */
-		zip_reg_write(cmd_ctl.u_reg64, (zip->reg_base + ZIP_CMD_CTL));
+		zip_reset(zip);
 		iounmap(zip->reg_base);
 	}
 
@@ -342,36 +370,6 @@ static struct pci_driver zip_driver = {
 };
 
 /* Kernel Crypto Subsystem Interface */
-
-static struct crypto_alg zip_comp_deflate = {
-	.cra_name		= "deflate",
-	.cra_driver_name	= "deflate-cavium",
-	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
-	.cra_ctxsize		= sizeof(struct zip_kernel_ctx),
-	.cra_priority           = 300,
-	.cra_module		= THIS_MODULE,
-	.cra_init		= zip_alloc_comp_ctx_deflate,
-	.cra_exit		= zip_free_comp_ctx,
-	.cra_u			= { .compress = {
-		.coa_compress	= zip_comp_compress,
-		.coa_decompress	= zip_comp_decompress
-		 } }
-};
-
-static struct crypto_alg zip_comp_lzs = {
-	.cra_name		= "lzs",
-	.cra_driver_name	= "lzs-cavium",
-	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
-	.cra_ctxsize		= sizeof(struct zip_kernel_ctx),
-	.cra_priority           = 300,
-	.cra_module		= THIS_MODULE,
-	.cra_init		= zip_alloc_comp_ctx_lzs,
-	.cra_exit		= zip_free_comp_ctx,
-	.cra_u			= { .compress = {
-		.coa_compress	= zip_comp_compress,
-		.coa_decompress	= zip_comp_decompress
-		 } }
-};
 
 static struct scomp_alg zip_scomp_deflate = {
 	.alloc_ctx		= zip_alloc_scomp_ctx_deflate,
@@ -403,22 +401,10 @@ static int zip_register_compression_device(void)
 {
 	int ret;
 
-	ret = crypto_register_alg(&zip_comp_deflate);
-	if (ret < 0) {
-		zip_err("Deflate algorithm registration failed\n");
-		return ret;
-	}
-
-	ret = crypto_register_alg(&zip_comp_lzs);
-	if (ret < 0) {
-		zip_err("LZS algorithm registration failed\n");
-		goto err_unregister_alg_deflate;
-	}
-
 	ret = crypto_register_scomp(&zip_scomp_deflate);
 	if (ret < 0) {
 		zip_err("Deflate scomp algorithm registration failed\n");
-		goto err_unregister_alg_lzs;
+		return ret;
 	}
 
 	ret = crypto_register_scomp(&zip_scomp_lzs);
@@ -431,18 +417,12 @@ static int zip_register_compression_device(void)
 
 err_unregister_scomp_deflate:
 	crypto_unregister_scomp(&zip_scomp_deflate);
-err_unregister_alg_lzs:
-	crypto_unregister_alg(&zip_comp_lzs);
-err_unregister_alg_deflate:
-	crypto_unregister_alg(&zip_comp_deflate);
 
 	return ret;
 }
 
 static void zip_unregister_compression_device(void)
 {
-	crypto_unregister_alg(&zip_comp_deflate);
-	crypto_unregister_alg(&zip_comp_lzs);
 	crypto_unregister_scomp(&zip_scomp_deflate);
 	crypto_unregister_scomp(&zip_scomp_lzs);
 }
@@ -585,7 +565,7 @@ DEFINE_SHOW_ATTRIBUTE(zip_regs);
 /* Root directory for thunderx_zip debugfs entry */
 static struct dentry *zip_debugfs_root;
 
-static void __init zip_debugfs_init(void)
+static void zip_debugfs_init(void)
 {
 	if (!debugfs_initialized())
 		return;
@@ -604,7 +584,7 @@ static void __init zip_debugfs_init(void)
 
 }
 
-static void __exit zip_debugfs_exit(void)
+static void zip_debugfs_exit(void)
 {
 	debugfs_remove_recursive(zip_debugfs_root);
 }
@@ -615,48 +595,7 @@ static void __exit zip_debugfs_exit(void) { }
 #endif
 /* debugfs - end */
 
-static int __init zip_init_module(void)
-{
-	int ret;
-
-	zip_msg("%s\n", DRV_NAME);
-
-	ret = pci_register_driver(&zip_driver);
-	if (ret < 0) {
-		zip_err("ZIP: pci_register_driver() failed\n");
-		return ret;
-	}
-
-	/* Register with the Kernel Crypto Interface */
-	ret = zip_register_compression_device();
-	if (ret < 0) {
-		zip_err("ZIP: Kernel Crypto Registration failed\n");
-		goto err_pci_unregister;
-	}
-
-	/* comp-decomp statistics are handled with debugfs interface */
-	zip_debugfs_init();
-
-	return ret;
-
-err_pci_unregister:
-	pci_unregister_driver(&zip_driver);
-	return ret;
-}
-
-static void __exit zip_cleanup_module(void)
-{
-	zip_debugfs_exit();
-
-	/* Unregister from the kernel crypto interface */
-	zip_unregister_compression_device();
-
-	/* Unregister this driver for pci zip devices */
-	pci_unregister_driver(&zip_driver);
-}
-
-module_init(zip_init_module);
-module_exit(zip_cleanup_module);
+module_pci_driver(zip_driver);
 
 MODULE_AUTHOR("Cavium Inc");
 MODULE_DESCRIPTION("Cavium Inc ThunderX ZIP Driver");

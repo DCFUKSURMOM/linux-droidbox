@@ -43,10 +43,10 @@
 #define MII_DM9161_INTR_DPLX_CHANGE	0x0010
 #define MII_DM9161_INTR_SPD_CHANGE	0x0008
 #define MII_DM9161_INTR_LINK_CHANGE	0x0004
-#define MII_DM9161_INTR_INIT 		0x0000
+#define MII_DM9161_INTR_INIT		0x0000
 #define MII_DM9161_INTR_STOP	\
-(MII_DM9161_INTR_DPLX_MASK | MII_DM9161_INTR_SPD_MASK \
- | MII_DM9161_INTR_LINK_MASK | MII_DM9161_INTR_MASK)
+	(MII_DM9161_INTR_DPLX_MASK | MII_DM9161_INTR_SPD_MASK |	\
+	 MII_DM9161_INTR_LINK_MASK | MII_DM9161_INTR_MASK)
 #define MII_DM9161_INTR_CHANGE	\
 	(MII_DM9161_INTR_DPLX_CHANGE | \
 	 MII_DM9161_INTR_SPD_CHANGE | \
@@ -209,7 +209,7 @@ static struct phy_driver dm91xx_driver[] = {
 
 module_phy_driver(dm91xx_driver);
 
-static struct mdio_device_id __maybe_unused davicom_tbl[] = {
+static const struct mdio_device_id __maybe_unused davicom_tbl[] = {
 	{ 0x0181b880, 0x0ffffff0 },
 	{ 0x0181b8b0, 0x0ffffff0 },
 	{ 0x0181b8a0, 0x0ffffff0 },

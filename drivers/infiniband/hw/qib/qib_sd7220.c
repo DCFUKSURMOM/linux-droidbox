@@ -587,7 +587,7 @@ static int epb_access(struct qib_devdata *dd, int sdnum, int claim)
 		/* Need to release */
 		u64 pollval;
 		/*
-		 * The only writeable bits are the request and CS.
+		 * The only writable bits are the request and CS.
 		 * Both should be clear
 		 */
 		u64 newval = 0;
@@ -1375,7 +1375,7 @@ void toggle_7220_rclkrls(struct qib_devdata *dd)
 void shutdown_7220_relock_poll(struct qib_devdata *dd)
 {
 	if (dd->cspec->relock_timer_active)
-		del_timer_sync(&dd->cspec->relock_timer);
+		timer_delete_sync(&dd->cspec->relock_timer);
 }
 
 static unsigned qib_relock_by_timer = 1;

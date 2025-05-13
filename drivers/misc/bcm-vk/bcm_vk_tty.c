@@ -64,9 +64,9 @@ static void bcm_vk_tty_wq_handler(struct work_struct *work)
 	struct bcm_vk_tty *vktty;
 	int card_status;
 	int count;
-	unsigned char c;
 	int i;
 	int wr;
+	u8 c;
 
 	card_status = vkread32(vk, BAR_0, BAR_CARD_STATUS);
 	if (BCM_VK_INTF_IS_DOWN(card_status))
@@ -177,7 +177,7 @@ static void bcm_vk_tty_close(struct tty_struct *tty, struct file *file)
 	vk->tty[tty->index].is_opened = false;
 
 	if (tty->count == 1)
-		del_timer_sync(&vk->serial_timer);
+		timer_delete_sync(&vk->serial_timer);
 }
 
 static void bcm_vk_tty_doorbell(struct bcm_vk *vk, u32 db_val)
@@ -186,14 +186,13 @@ static void bcm_vk_tty_doorbell(struct bcm_vk *vk, u32 db_val)
 		  VK_BAR0_REGSEG_DB_BASE + VK_BAR0_REGSEG_TTY_DB_OFFSET);
 }
 
-static int bcm_vk_tty_write(struct tty_struct *tty,
-			    const unsigned char *buffer,
-			    int count)
+static ssize_t bcm_vk_tty_write(struct tty_struct *tty, const u8 *buffer,
+				size_t count)
 {
 	int index;
 	struct bcm_vk *vk;
 	struct bcm_vk_tty *vktty;
-	int i;
+	size_t i;
 
 	index = tty->index;
 	vk = dev_get_drvdata(tty->dev);
@@ -214,7 +213,7 @@ static int bcm_vk_tty_write(struct tty_struct *tty,
 	return count;
 }
 
-static int bcm_vk_tty_write_room(struct tty_struct *tty)
+static unsigned int bcm_vk_tty_write_room(struct tty_struct *tty)
 {
 	struct bcm_vk *vk = dev_get_drvdata(tty->dev);
 
@@ -249,7 +248,7 @@ int bcm_vk_tty_init(struct bcm_vk *vk, char *name)
 	tty_drv->name = kstrdup(name, GFP_KERNEL);
 	if (!tty_drv->name) {
 		err = -ENOMEM;
-		goto err_put_tty_driver;
+		goto err_tty_driver_kref_put;
 	}
 	tty_drv->type = TTY_DRIVER_TYPE_SERIAL;
 	tty_drv->subtype = SERIAL_TYPE_NORMAL;
@@ -267,13 +266,13 @@ int bcm_vk_tty_init(struct bcm_vk *vk, char *name)
 		struct device *tty_dev;
 
 		tty_port_init(&vk->tty[i].port);
-		tty_dev = tty_port_register_device(&vk->tty[i].port, tty_drv,
-						   i, dev);
+		tty_dev = tty_port_register_device_attr(&vk->tty[i].port,
+							tty_drv, i, dev, vk,
+							NULL);
 		if (IS_ERR(tty_dev)) {
 			err = PTR_ERR(tty_dev);
 			goto unwind;
 		}
-		dev_set_drvdata(tty_dev, vk);
 		vk->tty[i].is_opened = false;
 	}
 
@@ -295,8 +294,8 @@ err_kfree_tty_name:
 	kfree(tty_drv->name);
 	tty_drv->name = NULL;
 
-err_put_tty_driver:
-	put_tty_driver(tty_drv);
+err_tty_driver_kref_put:
+	tty_driver_kref_put(tty_drv);
 
 	return err;
 }
@@ -305,7 +304,7 @@ void bcm_vk_tty_exit(struct bcm_vk *vk)
 {
 	int i;
 
-	del_timer_sync(&vk->serial_timer);
+	timer_delete_sync(&vk->serial_timer);
 	for (i = 0; i < BCM_VK_NUM_TTY; ++i) {
 		tty_port_unregister_device(&vk->tty[i].port,
 					   vk->tty_drv,
@@ -317,7 +316,7 @@ void bcm_vk_tty_exit(struct bcm_vk *vk)
 	kfree(vk->tty_drv->name);
 	vk->tty_drv->name = NULL;
 
-	put_tty_driver(vk->tty_drv);
+	tty_driver_kref_put(vk->tty_drv);
 }
 
 void bcm_vk_tty_terminate_tty_user(struct bcm_vk *vk)

@@ -10,6 +10,11 @@
 /* Device IDs */
 #define OTX2_CPT_PCI_PF_DEVICE_ID 0xA0FD
 #define OTX2_CPT_PCI_VF_DEVICE_ID 0xA0FE
+#define CN10K_CPT_PCI_PF_DEVICE_ID 0xA0F2
+#define CN10K_CPT_PCI_VF_DEVICE_ID 0xA0F3
+
+#define CPT_PCI_SUBSYS_DEVID_CN10K_A 0xB900
+#define CPT_PCI_SUBSYS_DEVID_CN10K_B 0xBD00
 
 /* Mailbox interrupts offset */
 #define OTX2_CPT_PF_MBOX_INT	6
@@ -25,6 +30,7 @@
  */
 #define OTX2_CPT_VF_MSIX_VECTORS 1
 #define OTX2_CPT_VF_INTR_MBOX_MASK BIT(0)
+#define CN10K_CPT_VF_MBOX_REGION  (0xC0000)
 
 /* CPT LF MSIX vectors */
 #define OTX2_CPT_LF_MSIX_VECTORS 2
@@ -96,6 +102,9 @@
 #define OTX2_CPT_LF_Q_INST_PTR          (0x110)
 #define OTX2_CPT_LF_Q_GRP_PTR           (0x120)
 #define OTX2_CPT_LF_NQX(a)              (0x400 | (a) << 3)
+#define OTX2_CPT_LF_CTX_CTL             (0x500)
+#define OTX2_CPT_LF_CTX_FLUSH           (0x510)
+#define OTX2_CPT_LF_CTX_ERR             (0x520)
 #define OTX2_CPT_RVU_FUNC_BLKADDR_SHIFT 20
 /* LMT LF registers */
 #define OTX2_CPT_LMT_LFBASE             BIT_ULL(OTX2_CPT_RVU_FUNC_BLKADDR_SHIFT)
@@ -135,7 +144,7 @@ enum otx2_cpt_comp_e {
 	OTX2_CPT_COMP_E_FAULT = 0x02,
 	OTX2_CPT_COMP_E_HWERR = 0x04,
 	OTX2_CPT_COMP_E_INSTERR = 0x05,
-	OTX2_CPT_COMP_E_LAST_ENTRY = 0x06
+	OTX2_CPT_COMP_E_WARN = 0x06
 };
 
 /*
@@ -266,13 +275,22 @@ union otx2_cpt_inst_s {
 union otx2_cpt_res_s {
 	u64 u[2];
 
-	struct {
+	struct cn9k_cpt_res_s {
 		u64 compcode:8;
 		u64 uc_compcode:8;
 		u64 doneint:1;
 		u64 reserved_17_63:47;
 		u64 reserved_64_127;
 	} s;
+
+	struct cn10k_cpt_res_s {
+		u64 compcode:7;
+		u64 doneint:1;
+		u64 uc_compcode:8;
+		u64 rlen:16;
+		u64 spi:32;
+		u64 esn;
+	} cn10k;
 };
 
 /*
@@ -455,7 +473,8 @@ union otx2_cptx_af_lf_ctrl {
 		u64 cont_err:1;
 		u64 reserved_11_15:5;
 		u64 nixtx_en:1;
-		u64 reserved_17_47:31;
+		u64 ctx_ilen:3;
+		u64 reserved_17_47:28;
 		u64 grp:8;
 		u64 reserved_56_63:8;
 	} s;

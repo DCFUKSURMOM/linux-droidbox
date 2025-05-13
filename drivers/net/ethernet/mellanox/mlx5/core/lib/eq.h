@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
-/* Copyright (c) 2018 Mellanox Technologies */
+/* Copyright (c) 2018-2021, Mellanox Technologies inc.  All rights reserved. */
 
 #ifndef __LIB_MLX5_EQ_H__
 #define __LIB_MLX5_EQ_H__
@@ -32,6 +32,7 @@ struct mlx5_eq {
 	unsigned int            irqn;
 	u8                      eqn;
 	struct mlx5_rsc_debug   *dbg;
+	struct mlx5_irq         *irq;
 };
 
 struct mlx5_eq_async {
@@ -71,7 +72,7 @@ static inline void eq_update_ci(struct mlx5_eq *eq, int arm)
 
 	__raw_writel((__force u32)cpu_to_be32(val), addr);
 	/* We still want ordering, just not swabbing, so add a barrier */
-	mb();
+	wmb();
 }
 
 int mlx5_eq_table_init(struct mlx5_core_dev *dev);
@@ -84,7 +85,6 @@ void mlx5_eq_del_cq(struct mlx5_eq *eq, struct mlx5_core_cq *cq);
 struct mlx5_eq_comp *mlx5_eqn2comp_eq(struct mlx5_core_dev *dev, int eqn);
 struct mlx5_eq *mlx5_get_async_eq(struct mlx5_core_dev *dev);
 void mlx5_cq_tasklet_cb(struct tasklet_struct *t);
-struct cpumask *mlx5_eq_comp_cpumask(struct mlx5_core_dev *dev, int ix);
 
 u32 mlx5_eq_poll_irq_disabled(struct mlx5_eq_comp *eq);
 void mlx5_cmd_eq_recover(struct mlx5_core_dev *dev);
@@ -103,6 +103,6 @@ void mlx5_core_eq_free_irqs(struct mlx5_core_dev *dev);
 struct cpu_rmap *mlx5_eq_table_get_rmap(struct mlx5_core_dev *dev);
 #endif
 
-int mlx5_vector2irqn(struct mlx5_core_dev *dev, int vector, unsigned int *irqn);
+int mlx5_comp_irqn_get(struct mlx5_core_dev *dev, int vector, unsigned int *irqn);
 
 #endif

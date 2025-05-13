@@ -80,11 +80,9 @@ static void __lapb_insert_cb(struct lapb_cb *lapb)
 
 static struct lapb_cb *__lapb_devtostruct(struct net_device *dev)
 {
-	struct list_head *entry;
 	struct lapb_cb *lapb, *use = NULL;
 
-	list_for_each(entry, &lapb_list) {
-		lapb = list_entry(entry, struct lapb_cb, node);
+	list_for_each_entry(lapb, &lapb_list, node) {
 		if (lapb->dev == dev) {
 			use = lapb;
 			break;
@@ -196,8 +194,8 @@ int lapb_unregister(struct net_device *dev)
 	spin_unlock_bh(&lapb->lock);
 
 	/* Wait for running timers to stop */
-	del_timer_sync(&lapb->t1timer);
-	del_timer_sync(&lapb->t2timer);
+	timer_delete_sync(&lapb->t1timer);
+	timer_delete_sync(&lapb->t2timer);
 
 	__lapb_remove_cb(lapb);
 
