@@ -1,6 +1,6 @@
 This repository is for my Xbox Linux kernel shenanigans
 
-The branch this READNE is in serves no other purpose but to provide information about this repository
+The branch this README is in serves no other purpose but to provide information about this repository
 
 The actual kernels are in other branches.
 
